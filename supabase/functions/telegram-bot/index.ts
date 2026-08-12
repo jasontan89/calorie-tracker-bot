@@ -26,6 +26,7 @@ try {
   await bot.api.setMyCommands([
     { command: "today", description: "📅 Today's Summary & Macros" },
     { command: "history", description: "📊 7-Day Calorie Chart" },
+    { command: "presets", description: "⭐ Saved Presets & Supplements" },
     { command: "weight", description: "⚖️ Log Current Weight (kg)" },
     { command: "progress", description: "📈 30-Day Weight Chart" },
     { command: "leaderboard", description: "🏆 Group Calorie Leaderboard" },
@@ -142,12 +143,13 @@ bot.command("start", async (ctx) => {
   const name = ctx.from?.first_name ?? "there";
 
   await ctx.reply(
-    `Welcome to Calorie Tracker Bot v3, ${name}! 🍎\n\n` +
-    `I can track calories, macronutrients, weight, and voice notes!\n\n` +
+    `Welcome to Calorie Tracker Bot v3.1, ${name}! 🍎\n\n` +
+    `I can track calories, macronutrients, weight, voice notes & saved presets!\n\n` +
     `👉 *How to use:*\n` +
     `• 📸 *Send a photo* of your food to auto-estimate calories & macros!\n` +
     `• 🎙️ *Send a voice note* (e.g. "I had two eggs and toast") to auto-log!\n` +
     `• ✍️ *Just type what you ate* in chat.\n` +
+    `• ⭐ Use /presets to view & 1-tap log saved supplements or meals.\n` +
     `• 📅 Use /today to view calories & macro balances.\n` +
     `• 🎯 Use /target <number> to update your daily goal.\n` +
     `• 📊 Use /history for your 7-day calorie chart.\n` +
@@ -340,6 +342,40 @@ bot.command("history", async (ctx) => {
     console.error("Failed to generate/send calorie chart:", chartErr);
     await ctx.reply(textReport, { parse_mode: "Markdown" });
   }
+});
+
+bot.command("presets", async (ctx) => {
+  const userId = ctx.from?.id;
+  if (!userId) return;
+
+  await ensureUserProfile(userId);
+
+  const { data: presets, error } = await supabase
+    .from("user_presets")
+    .select("*")
+    .eq("user_id", userId)
+    .order("created_at", { ascending: false });
+
+  if (error || !presets || presets.length === 0) {
+    return ctx.reply(
+      `⭐ *No Saved Presets Yet!*\n\n` +
+      `Log any meal, photo, or voice note, then tap *⭐ Save as Preset* on the log confirmation message to save quick items (like daily supplements or frequent meals).`,
+      { parse_mode: "Markdown" }
+    );
+  }
+
+  let text = `⭐ *Your Saved Presets & Supplements*\n\n`;
+  const keyboard = new InlineKeyboard();
+
+  presets.forEach((preset) => {
+    text += `• *${preset.food_name}* — ${preset.calories} kcal (P:${preset.protein}g C:${preset.carbs}g F:${preset.fat}g)\n`;
+    keyboard.text(`➕ Log ${preset.food_name}`, `log_preset:${preset.id}`)
+            .text(`🗑️ Delete`, `del_preset:${preset.id}`)
+            .row();
+  });
+
+  text += `\n_Tap "➕ Log" to immediately add an item to today's intake!_`;
+  await ctx.reply(text, { parse_mode: "Markdown", reply_markup: keyboard });
 });
 
 bot.command("delete", async (ctx) => {
@@ -721,24 +757,115 @@ bot.callbackQuery(/^confirm:(.+)$/, async (ctx) => {
     return ctx.editMessageText("⚠️ This food log has expired or was already handled.");
   }
 
-  await supabase.from("food_logs").insert({
+  const { data: insertedLog, error: insertErr } = await supabase.from("food_logs").insert({
     user_id: pending.user_id,
     food_name: pending.food_name,
     calories: pending.calories,
     protein: pending.protein || 0,
     carbs: pending.carbs || 0,
     fat: pending.fat || 0
-  });
+  }).select().single();
+
+  if (insertErr || !insertedLog) {
+    console.error("Error logging meal:", insertErr);
+    return ctx.editMessageText("⚠️ Failed to save food log.");
+  }
 
   await supabase.from("pending_food_logs").delete().eq("id", pendingId);
   const streakMessage = await updateStreakAndGetMessage(pending.user_id);
+
+  const saveKeyboard = new InlineKeyboard().text("⭐ Save as Preset", `save_preset:${insertedLog.id}`);
 
   await ctx.editMessageText(
     `Logged: *${pending.food_name}* (${pending.calories} kcal) ✅\n` +
     `Macros: P:${pending.protein}g | C:${pending.carbs}g | F:${pending.fat}g` +
     streakMessage,
+    { parse_mode: "Markdown", reply_markup: saveKeyboard }
+  );
+});
+
+bot.callbackQuery(/^save_preset:(.+)$/, async (ctx) => {
+  const logId = ctx.match[1];
+  await ctx.answerCallbackQuery();
+
+  const { data: log, error } = await supabase
+    .from("food_logs")
+    .select("*")
+    .eq("id", logId)
+    .maybeSingle();
+
+  if (error || !log) {
+    return ctx.reply("⚠️ Could not find food log to save.");
+  }
+
+  const { error: insertErr } = await supabase.from("user_presets").insert({
+    user_id: log.user_id,
+    food_name: log.food_name,
+    calories: log.calories,
+    protein: log.protein || 0,
+    carbs: log.carbs || 0,
+    fat: log.fat || 0
+  });
+
+  if (insertErr) {
+    console.error("Error saving preset:", insertErr);
+    return ctx.reply("⚠️ Failed to save preset. It might already be saved.");
+  }
+
+  await ctx.reply(`⭐ Saved *${log.food_name}* (${log.calories} kcal) to your presets! Use /presets anytime to quick-log it.`, { parse_mode: "Markdown" });
+});
+
+bot.callbackQuery(/^log_preset:(.+)$/, async (ctx) => {
+  const presetId = ctx.match[1];
+  await ctx.answerCallbackQuery();
+
+  const { data: preset } = await supabase
+    .from("user_presets")
+    .select("*")
+    .eq("id", presetId)
+    .maybeSingle();
+
+  if (!preset) {
+    return ctx.reply("⚠️ Preset not found.");
+  }
+
+  const { error: insertErr } = await supabase.from("food_logs").insert({
+    user_id: preset.user_id,
+    food_name: preset.food_name,
+    calories: preset.calories,
+    protein: preset.protein,
+    carbs: preset.carbs,
+    fat: preset.fat
+  });
+
+  if (insertErr) {
+    console.error("Error logging preset:", insertErr);
+    return ctx.reply("⚠️ Failed to log preset.");
+  }
+
+  const streakMessage = await updateStreakAndGetMessage(preset.user_id);
+
+  await ctx.reply(
+    `Logged: *${preset.food_name}* (${preset.calories} kcal) ✅\n` +
+    `Macros: P:${preset.protein}g | C:${preset.carbs}g | F:${preset.fat}g` +
+    streakMessage,
     { parse_mode: "Markdown" }
   );
+});
+
+bot.callbackQuery(/^del_preset:(.+)$/, async (ctx) => {
+  const presetId = ctx.match[1];
+  await ctx.answerCallbackQuery();
+
+  const { data: preset } = await supabase
+    .from("user_presets")
+    .select("food_name")
+    .eq("id", presetId)
+    .maybeSingle();
+
+  await supabase.from("user_presets").delete().eq("id", presetId);
+
+  await ctx.reply(`🗑️ Deleted preset: *${preset?.food_name || "Item"}*`, { parse_mode: "Markdown" });
 });
 
 bot.callbackQuery(/^cancel:(.+)$/, async (ctx) => {
@@ -784,23 +911,29 @@ bot.on("message:text", async (ctx) => {
     const scaledCarbs = Math.round((pending.carbs || 0) * scaleRatio);
     const scaledFat = Math.round((pending.fat || 0) * scaleRatio);
 
-    await supabase.from("food_logs").insert({
+    const { data: insertedLog, error: insertErr } = await supabase.from("food_logs").insert({
       user_id: userId,
       food_name: pending.food_name,
       calories: newCalories,
       protein: scaledProtein,
       carbs: scaledCarbs,
       fat: scaledFat
-    });
+    }).select().single();
+
+    if (insertErr || !insertedLog) {
+      return ctx.reply("⚠️ Failed to save custom calories log.");
+    }
 
     await supabase.from("pending_food_logs").delete().eq("id", pending.id);
     const streakMessage = await updateStreakAndGetMessage(userId);
+
+    const saveKeyboard = new InlineKeyboard().text("⭐ Save as Preset", `save_preset:${insertedLog.id}`);
 
     return ctx.reply(
       `Logged: *${pending.food_name}* with *${newCalories} kcal* ✅\n` +
       `Scaled Macros: P:${scaledProtein}g | C:${scaledCarbs}g | F:${scaledFat}g` +
       streakMessage,
-      { parse_mode: "Markdown" }
+      { parse_mode: "Markdown", reply_markup: saveKeyboard }
     );
   }
 
