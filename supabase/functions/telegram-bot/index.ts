@@ -21,24 +21,26 @@ if (!supabaseUrl || !supabaseServiceKey) {
 const supabase = createClient(supabaseUrl, supabaseServiceKey);
 const bot = new Bot(token);
 
-// Register Persistent Menu commands
-try {
-  await bot.api.setMyCommands([
-    { command: "today", description: "📅 Today's Summary & Macros" },
-    { command: "history", description: "📊 7-Day Calorie Chart" },
-    { command: "presets", description: "⭐ Saved Presets & Supplements" },
-    { command: "weight", description: "⚖️ Log Current Weight (kg)" },
-    { command: "progress", description: "📈 30-Day Weight Chart" },
-    { command: "leaderboard", description: "🏆 Group Calorie Leaderboard" },
-    { command: "joinleaderboard", description: "👥 Join Group Leaderboard" },
-    { command: "reminders", description: "🔔 Toggle Daily Alerts" },
-    { command: "delete", description: "❌ Delete Last Logged Item" },
-    { command: "target", description: "🎯 Update Calorie Goal" },
-    { command: "start", description: "👋 Welcome & Instructions" }
-  ]);
-  console.log("Persistent bot commands menu registered successfully.");
-} catch (err) {
-  console.error("Failed to register persistent menu commands:", err);
+// Helper function to register bot menu commands
+async function registerBotCommands() {
+  try {
+    await bot.api.setMyCommands([
+      { command: "today", description: "📅 Today's Summary & Macros" },
+      { command: "presets", description: "⭐ Saved Presets & Supplements" },
+      { command: "history", description: "📊 7-Day Calorie Chart" },
+      { command: "weight", description: "⚖️ Log Current Weight (kg)" },
+      { command: "progress", description: "📈 30-Day Weight Chart" },
+      { command: "leaderboard", description: "🏆 Group Calorie Leaderboard" },
+      { command: "joinleaderboard", description: "👥 Join Group Leaderboard" },
+      { command: "reminders", description: "🔔 Toggle Daily Alerts" },
+      { command: "delete", description: "❌ Delete Last Logged Item" },
+      { command: "target", description: "🎯 Update Calorie Goal" },
+      { command: "start", description: "👋 Welcome & Instructions" }
+    ]);
+    console.log("Persistent bot commands menu registered successfully.");
+  } catch (err) {
+    console.error("Failed to register persistent menu commands:", err);
+  }
 }
 
 // ── Timezone Helper (Singapore SGT / UTC+8) ──────────────────────────────────
@@ -98,7 +100,6 @@ async function updateStreakAndGetMessage(userId: number): Promise<string> {
   } else if (lastLogDate === todaySgt) {
     return `\n\n🔥 You are on a *${currentStreak}-day streak*!`;
   } else {
-    // Calculate yesterday in SGT
     const yesterdayDate = new Date(new Date().getTime() - 24 * 60 * 60 * 1000);
     const yesterdaySgt = getSGTDateStr(yesterdayDate);
 
@@ -133,14 +134,56 @@ function getMealType(): string {
   return "Snack";
 }
 
+async function renderPresetsMenu(ctx: any, userId: number) {
+  await ensureUserProfile(userId);
+
+  const { data: presets, error } = await supabase
+    .from("user_presets")
+    .select("*")
+    .eq("user_id", userId)
+    .order("created_at", { ascending: false });
+
+  if (error || !presets || presets.length === 0) {
+    const emptyMsg = 
+      `⭐ *No Saved Presets Yet!*\n\n` +
+      `Log any meal, photo, or voice note, then tap *⭐ Save as Preset* on the log confirmation message to save quick items (like daily supplements or frequent meals).`;
+    if (ctx.callbackQuery) {
+      await ctx.editMessageText(emptyMsg, { parse_mode: "Markdown" });
+    } else {
+      await ctx.reply(emptyMsg, { parse_mode: "Markdown" });
+    }
+    return;
+  }
+
+  let text = `⭐ *Your Saved Presets & Supplements*\n\n`;
+  const keyboard = new InlineKeyboard();
+
+  presets.forEach((preset) => {
+    text += `• *${preset.food_name}* — ${preset.calories} kcal (P:${preset.protein}g C:${preset.carbs}g F:${preset.fat}g)\n`;
+    keyboard.text(`➕ Log ${preset.food_name}`, `log_preset:${preset.id}`)
+            .text(`🗑️ Delete`, `del_preset:${preset.id}`)
+            .row();
+  });
+
+  text += `\n_Tap "➕ Log" to immediately add an item to today's intake!_`;
+  if (ctx.callbackQuery) {
+    await ctx.reply(text, { parse_mode: "Markdown", reply_markup: keyboard });
+  } else {
+    await ctx.reply(text, { parse_mode: "Markdown", reply_markup: keyboard });
+  }
+}
+
 // ── Commands ─────────────────────────────────────────────────────────────────
 
 bot.command("start", async (ctx) => {
   const userId = ctx.from?.id;
   if (!userId) return;
 
+  await registerBotCommands();
   await ensureUserProfile(userId);
   const name = ctx.from?.first_name ?? "there";
+
+  const keyboard = new InlineKeyboard().text("⭐ View Saved Presets", "open_presets");
 
   await ctx.reply(
     `Welcome to Calorie Tracker Bot v3.1, ${name}! 🍎\n\n` +
@@ -156,7 +199,7 @@ bot.command("start", async (ctx) => {
     `• 🏆 Use /joinleaderboard & /leaderboard in group chats!\n` +
     `• ⚖️ Use /weight <number> & /progress for weight tracking.\n` +
     `• 🔔 Use /reminders for opt-in AI coaching & reminders.`,
-    { parse_mode: "Markdown" }
+    { parse_mode: "Markdown", reply_markup: keyboard }
   );
 });
 
@@ -250,7 +293,9 @@ bot.command("today", async (ctx) => {
   message += `• Carbs: *${totalCarbs}g* / ${macroTargets.carbs}g\n`;
   message += `• Fat: *${totalFat}g* / ${macroTargets.fat}g`;
 
-  await ctx.reply(message, { parse_mode: "Markdown" });
+  const keyboard = new InlineKeyboard().text("⭐ Quick Log Presets", "open_presets");
+
+  await ctx.reply(message, { parse_mode: "Markdown", reply_markup: keyboard });
 });
 
 bot.command("history", async (ctx) => {
@@ -347,35 +392,7 @@ bot.command("history", async (ctx) => {
 bot.command("presets", async (ctx) => {
   const userId = ctx.from?.id;
   if (!userId) return;
-
-  await ensureUserProfile(userId);
-
-  const { data: presets, error } = await supabase
-    .from("user_presets")
-    .select("*")
-    .eq("user_id", userId)
-    .order("created_at", { ascending: false });
-
-  if (error || !presets || presets.length === 0) {
-    return ctx.reply(
-      `⭐ *No Saved Presets Yet!*\n\n` +
-      `Log any meal, photo, or voice note, then tap *⭐ Save as Preset* on the log confirmation message to save quick items (like daily supplements or frequent meals).`,
-      { parse_mode: "Markdown" }
-    );
-  }
-
-  let text = `⭐ *Your Saved Presets & Supplements*\n\n`;
-  const keyboard = new InlineKeyboard();
-
-  presets.forEach((preset) => {
-    text += `• *${preset.food_name}* — ${preset.calories} kcal (P:${preset.protein}g C:${preset.carbs}g F:${preset.fat}g)\n`;
-    keyboard.text(`➕ Log ${preset.food_name}`, `log_preset:${preset.id}`)
-            .text(`🗑️ Delete`, `del_preset:${preset.id}`)
-            .row();
-  });
-
-  text += `\n_Tap "➕ Log" to immediately add an item to today's intake!_`;
-  await ctx.reply(text, { parse_mode: "Markdown", reply_markup: keyboard });
+  await renderPresetsMenu(ctx, userId);
 });
 
 bot.command("delete", async (ctx) => {
@@ -743,6 +760,13 @@ bot.on("message:voice", async (ctx) => {
 
 // ── Callback Queries ──────────────────────────────────────────────────────────
 
+bot.callbackQuery("open_presets", async (ctx) => {
+  const userId = ctx.from?.id;
+  if (!userId) return;
+  await ctx.answerCallbackQuery();
+  await renderPresetsMenu(ctx, userId);
+});
+
 bot.callbackQuery(/^confirm:(.+)$/, async (ctx) => {
   const pendingId = ctx.match[1];
   await ctx.answerCallbackQuery();
@@ -1076,6 +1100,9 @@ Deno.serve(async (req) => {
       await sendCronReminders(cronType as any);
       return new Response(`Cron ${cronType} executed successfully`, { status: 200 });
     }
+
+    // Explicitly ensure commands are registered with Telegram API
+    await registerBotCommands();
 
     return await handleUpdate(req);
   } catch (err) {
