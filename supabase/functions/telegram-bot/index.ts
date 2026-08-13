@@ -560,6 +560,10 @@ bot.command("leaderboard", async (ctx) => {
   const chatId = ctx.chat?.id;
   if (!chatId) return;
 
+  if (ctx.from?.id) {
+    await ensureUserProfile(ctx.from.id, ctx.from.first_name, ctx.from.username);
+  }
+
   const { data: members, error } = await supabase
     .from("group_members")
     .select("user_id")
@@ -595,15 +599,37 @@ bot.command("leaderboard", async (ctx) => {
 
   const profileMap = new Map((profiles ?? []).map(p => [p.user_id, p]));
 
-  const rankings = userIds.map(uid => {
-    const p = profileMap.get(uid);
+  const rankings = await Promise.all(userIds.map(async (uid) => {
+    let p = profileMap.get(uid);
+    let firstName = p?.first_name;
+    let username = p?.username;
+
+    if (!firstName) {
+      try {
+        const memberInfo = await ctx.api.getChatMember(chatId, uid);
+        if (memberInfo?.user) {
+          firstName = memberInfo.user.first_name;
+          username = memberInfo.user.username;
+          await supabase
+            .from("user_profiles")
+            .update({ first_name: firstName || null, username: username || null })
+            .eq("user_id", uid);
+        }
+      } catch (err) {
+        console.error(`Could not fetch chat member for user ${uid}:`, err);
+      }
+    }
+
     const daysCount = userDaysMap[uid]?.size ?? 0;
     const streak = p?.streak_count ?? 0;
-    const nameStr = p?.first_name 
-      ? (p.username ? `${p.first_name} (@${p.username})` : p.first_name)
+    const nameStr = firstName 
+      ? (username ? `${firstName} (@${username})` : firstName)
       : `User ${uid}`;
+
     return { userId: uid, nameStr, daysCount, streak };
-  }).sort((a, b) => b.daysCount - a.daysCount || b.streak - a.streak);
+  }));
+
+  rankings.sort((a, b) => b.daysCount - a.daysCount || b.streak - a.streak);
 
   let message = `🏆 *Group Calorie Tracker Leaderboard (Past 7 Days)* 🏆\n\n`;
   const medalEmojis = ["🥇", "🥈", "🥉"];
