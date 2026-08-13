@@ -21,8 +21,18 @@ if (!supabaseUrl || !supabaseServiceKey) {
 const supabase = createClient(supabaseUrl, supabaseServiceKey);
 const bot = new Bot(token);
 
-// Helper function to register bot menu commands
-async function registerBotCommands() {
+// Helper function to escape Telegram Markdown special characters
+function escapeMarkdown(text: string): string {
+  if (!text) return "";
+  return text.replace(/([*_`\[\]])/g, "\\$1");
+}
+
+// Global flag to track command registration state
+let commandsRegistered = false;
+
+// Helper function to register bot menu commands once on startup
+async function registerBotCommandsOnce() {
+  if (commandsRegistered) return;
   try {
     await bot.api.setMyCommands([
       { command: "today", description: "📅 Today's Summary & Macros" },
@@ -37,6 +47,7 @@ async function registerBotCommands() {
       { command: "target", description: "🎯 Update Calorie Goal" },
       { command: "start", description: "👋 Welcome & Instructions" }
     ]);
+    commandsRegistered = true;
     console.log("Persistent bot commands menu registered successfully.");
   } catch (err) {
     console.error("Failed to register persistent menu commands:", err);
@@ -55,11 +66,11 @@ function getSGTStartOfDayISO(date: Date = new Date()): string {
   return new Date(`${dateStr}T00:00:00+08:00`).toISOString();
 }
 
-// Helper: Ensure user profile exists
-async function ensureUserProfile(userId: number) {
+// Helper: Ensure user profile exists & keep display names up to date
+async function ensureUserProfile(userId: number, firstName?: string, username?: string) {
   const { data, error } = await supabase
     .from("user_profiles")
-    .select("user_id")
+    .select("user_id, first_name, username")
     .eq("user_id", userId)
     .maybeSingle();
 
@@ -71,11 +82,26 @@ async function ensureUserProfile(userId: number) {
   if (!data) {
     const { error: insertError } = await supabase
       .from("user_profiles")
-      .insert({ user_id: userId, daily_target: 2000, reminders_enabled: false, streak_count: 0 });
+      .insert({
+        user_id: userId,
+        daily_target: 2000,
+        reminders_enabled: false,
+        streak_count: 0,
+        first_name: firstName || null,
+        username: username || null
+      });
     
     if (insertError) {
       console.error("Error creating user profile:", insertError);
     }
+  } else if ((firstName && data.first_name !== firstName) || (username && data.username !== username)) {
+    await supabase
+      .from("user_profiles")
+      .update({
+        first_name: firstName || data.first_name,
+        username: username || data.username
+      })
+      .eq("user_id", userId);
   }
 }
 
@@ -135,7 +161,7 @@ function getMealType(): string {
 }
 
 async function renderPresetsMenu(ctx: any, userId: number) {
-  await ensureUserProfile(userId);
+  await ensureUserProfile(userId, ctx.from?.first_name, ctx.from?.username);
 
   const { data: presets, error } = await supabase
     .from("user_presets")
@@ -159,8 +185,9 @@ async function renderPresetsMenu(ctx: any, userId: number) {
   const keyboard = new InlineKeyboard();
 
   presets.forEach((preset) => {
-    text += `• *${preset.food_name}* — ${preset.calories} kcal (P:${preset.protein}g C:${preset.carbs}g F:${preset.fat}g)\n`;
-    keyboard.text(`➕ Log ${preset.food_name}`, `log_preset:${preset.id}`)
+    const safeName = escapeMarkdown(preset.food_name);
+    text += `• *${safeName}* — ${preset.calories} kcal (P:${preset.protein}g C:${preset.carbs}g F:${preset.fat}g)\n`;
+    keyboard.text(`➕ Log ${preset.food_name.substring(0, 15)}`, `log_preset:${preset.id}`)
             .text(`🗑️ Delete`, `del_preset:${preset.id}`)
             .row();
   });
@@ -179,14 +206,13 @@ bot.command("start", async (ctx) => {
   const userId = ctx.from?.id;
   if (!userId) return;
 
-  await registerBotCommands();
-  await ensureUserProfile(userId);
-  const name = ctx.from?.first_name ?? "there";
+  await ensureUserProfile(userId, ctx.from?.first_name, ctx.from?.username);
+  const name = escapeMarkdown(ctx.from?.first_name ?? "there");
 
   const keyboard = new InlineKeyboard().text("⭐ View Saved Presets", "open_presets");
 
   await ctx.reply(
-    `Welcome to Calorie Tracker Bot v3.1, ${name}! 🍎\n\n` +
+    `Welcome to Calorie Tracker Bot v3.2, ${name}! 🍎\n\n` +
     `I can track calories, macronutrients, weight, voice notes & saved presets!\n\n` +
     `👉 *How to use:*\n` +
     `• 📸 *Send a photo* of your food to auto-estimate calories & macros!\n` +
@@ -217,7 +243,7 @@ bot.command("target", async (ctx) => {
     return ctx.reply("Please enter a valid positive number for your target.");
   }
 
-  await ensureUserProfile(userId);
+  await ensureUserProfile(userId, ctx.from?.first_name, ctx.from?.username);
 
   const { error } = await supabase
     .from("user_profiles")
@@ -235,7 +261,7 @@ bot.command("today", async (ctx) => {
   const userId = ctx.from?.id;
   if (!userId) return;
 
-  await ensureUserProfile(userId);
+  await ensureUserProfile(userId, ctx.from?.first_name, ctx.from?.username);
 
   const { data: profile } = await supabase
     .from("user_profiles")
@@ -250,7 +276,7 @@ bot.command("today", async (ctx) => {
 
   const { data: logs, error } = await supabase
     .from("food_logs")
-    .select("food_name, calories, protein, carbs, fat, created_at")
+    .select("food_name, calories, protein, carbs, fat, meal_type, created_at")
     .eq("user_id", userId)
     .gte("created_at", sgtStartIso)
     .order("created_at", { ascending: true });
@@ -273,7 +299,9 @@ bot.command("today", async (ctx) => {
     message += `_No food logged today._\n\n`;
   } else {
     logs.forEach((log) => {
-      message += `• ${log.calories} kcal - _${log.food_name}_ (P:${log.protein}g C:${log.carbs}g F:${log.fat}g)\n`;
+      const safeFood = escapeMarkdown(log.food_name);
+      const safeMealType = escapeMarkdown(log.meal_type || "Meal");
+      message += `• ${log.calories} kcal - _${safeFood}_ (${safeMealType}) (P:${log.protein}g C:${log.carbs}g F:${log.fat}g)\n`;
     });
     message += `\n`;
   }
@@ -302,7 +330,7 @@ bot.command("history", async (ctx) => {
   const userId = ctx.from?.id;
   if (!userId) return;
 
-  await ensureUserProfile(userId);
+  await ensureUserProfile(userId, ctx.from?.first_name, ctx.from?.username);
 
   const sevenDaysAgoDate = new Date(new Date().getTime() - 6 * 24 * 60 * 60 * 1000);
   const sevenDaysAgoIso = getSGTStartOfDayISO(sevenDaysAgoDate);
@@ -412,7 +440,8 @@ bot.command("delete", async (ctx) => {
   }
 
   await supabase.from("food_logs").delete().eq("id", lastLog.id);
-  await ctx.reply(`🗑️ Deleted: *${lastLog.food_name}* (${lastLog.calories} kcal).`, { parse_mode: "Markdown" });
+  const safeFood = escapeMarkdown(lastLog.food_name);
+  await ctx.reply(`🗑️ Deleted: *${safeFood}* (${lastLog.calories} kcal).`, { parse_mode: "Markdown" });
 });
 
 bot.command("weight", async (ctx) => {
@@ -429,7 +458,7 @@ bot.command("weight", async (ctx) => {
     return ctx.reply("Please enter a valid weight number (e.g. 72.5).");
   }
 
-  await ensureUserProfile(userId);
+  await ensureUserProfile(userId, ctx.from?.first_name, ctx.from?.username);
   await supabase.from("weight_logs").insert({ user_id: userId, weight: weight });
   await ctx.reply(`⚖️ Logged weight: *${weight} kg*`, { parse_mode: "Markdown" });
 });
@@ -438,7 +467,7 @@ bot.command("progress", async (ctx) => {
   const userId = ctx.from?.id;
   if (!userId) return;
 
-  await ensureUserProfile(userId);
+  await ensureUserProfile(userId, ctx.from?.first_name, ctx.from?.username);
   const thirtyDaysAgoIso = getSGTStartOfDayISO(new Date(new Date().getTime() - 30 * 24 * 60 * 60 * 1000));
 
   const { data: logs } = await supabase
@@ -473,15 +502,25 @@ bot.command("progress", async (ctx) => {
     }
   };
 
-  const chartUrl = `https://quickchart.io/chart?c=${encodeURIComponent(JSON.stringify(chartConfig))}`;
-  await ctx.replyWithPhoto(chartUrl, { caption: "Here is your 30-day weight progress chart! 📈" });
+  try {
+    const chartUrl = `https://quickchart.io/chart?c=${encodeURIComponent(JSON.stringify(chartConfig))}`;
+    await ctx.replyWithPhoto(chartUrl, { caption: "Here is your 30-day weight progress chart! 📈" });
+  } catch (chartErr) {
+    console.error("Failed to generate/send weight chart:", chartErr);
+    let textSummary = `📈 *Weight Progress (Last 30 Days)*\n\n`;
+    logs.forEach(log => {
+      const dateStr = getSGTDateStr(new Date(log.created_at));
+      textSummary += `• *${dateStr}*: ${log.weight} kg\n`;
+    });
+    await ctx.reply(textSummary, { parse_mode: "Markdown" });
+  }
 });
 
 bot.command("reminders", async (ctx) => {
   const userId = ctx.from?.id;
   if (!userId) return;
 
-  await ensureUserProfile(userId);
+  await ensureUserProfile(userId, ctx.from?.first_name, ctx.from?.username);
   const { data: profile } = await supabase.from("user_profiles").select("reminders_enabled").eq("user_id", userId).maybeSingle();
   const newStatus = !(profile?.reminders_enabled ?? false);
 
@@ -502,7 +541,7 @@ bot.command("joinleaderboard", async (ctx) => {
 
   if (!userId || !chatId) return;
 
-  await ensureUserProfile(userId);
+  await ensureUserProfile(userId, ctx.from?.first_name, ctx.from?.username);
 
   const { error } = await supabase
     .from("group_members")
@@ -513,7 +552,7 @@ bot.command("joinleaderboard", async (ctx) => {
     return ctx.reply("Failed to join the leaderboard for this chat.");
   }
 
-  const userName = ctx.from?.first_name ?? "User";
+  const userName = escapeMarkdown(ctx.from?.first_name ?? "User");
   await ctx.reply(`🎉 *${userName}* has joined the chat leaderboard! Use /leaderboard to check rankings.`, { parse_mode: "Markdown" });
 });
 
@@ -535,7 +574,7 @@ bot.command("leaderboard", async (ctx) => {
 
   const { data: profiles } = await supabase
     .from("user_profiles")
-    .select("user_id, streak_count")
+    .select("user_id, streak_count, first_name, username")
     .in("user_id", userIds);
 
   const { data: logs } = await supabase
@@ -560,7 +599,10 @@ bot.command("leaderboard", async (ctx) => {
     const p = profileMap.get(uid);
     const daysCount = userDaysMap[uid]?.size ?? 0;
     const streak = p?.streak_count ?? 0;
-    return { userId: uid, daysCount, streak };
+    const nameStr = p?.first_name 
+      ? (p.username ? `${p.first_name} (@${p.username})` : p.first_name)
+      : `User ${uid}`;
+    return { userId: uid, nameStr, daysCount, streak };
   }).sort((a, b) => b.daysCount - a.daysCount || b.streak - a.streak);
 
   let message = `🏆 *Group Calorie Tracker Leaderboard (Past 7 Days)* 🏆\n\n`;
@@ -568,7 +610,8 @@ bot.command("leaderboard", async (ctx) => {
 
   rankings.forEach((r, idx) => {
     const medal = idx < 3 ? medalEmojis[idx] : ` ${idx + 1}.`;
-    message += `${medal} *User ${r.userId}* — *${r.daysCount} days logged* (🔥 ${r.streak}-day streak)\n`;
+    const safeName = escapeMarkdown(r.nameStr);
+    message += `${medal} *${safeName}* — *${r.daysCount} days logged* (🔥 ${r.streak}-day streak)\n`;
   });
 
   message += `\n_Keep logging daily to climb the leaderboard!_`;
@@ -586,7 +629,7 @@ async function processFoodWithGemini(
   mimeType?: string
 ) {
   try {
-    const geminiUrl = `https://generativelanguage.googleapis.com/v1beta/models/gemini-3.1-flash-lite:generateContent?key=${geminiApiKey}`;
+    const geminiUrl = `https://generativelanguage.googleapis.com/v1beta/models/gemini-1.5-flash:generateContent?key=${geminiApiKey}`;
     
     const isAudio = mimeType?.startsWith("audio/");
     const isImage = mimeType?.startsWith("image/");
@@ -648,6 +691,7 @@ async function processFoodWithGemini(
     const totalF = parsed.total?.fat || 0;
     const insight = parsed.nutrition_insight || "";
     const items = parsed.items || [];
+    const mealType = getMealType();
 
     const { data: pending, error: pendingError } = await supabase
       .from("pending_food_logs")
@@ -657,7 +701,8 @@ async function processFoodWithGemini(
         calories: totalCal,
         protein: totalP,
         carbs: totalC,
-        fat: totalF
+        fat: totalF,
+        meal_type: mealType
       })
       .select()
       .single();
@@ -670,22 +715,27 @@ async function processFoodWithGemini(
       .row()
       .text("❌ Cancel", `cancel:${pending.id}`);
 
-    const mealType = getMealType();
-    
+    const safeMealDesc = escapeMarkdown(mealDesc);
+    const safeInsight = escapeMarkdown(insight);
+
     let displayMessage = `🥗 *AI Meal Scan Results*\n\n`;
-    displayMessage += `🍽 *${mealDesc}*\n`;
+    displayMessage += `🍽 *${safeMealDesc}*\n`;
     displayMessage += `🕐 Meal type: ${mealType}\n\n`;
     displayMessage += `Identified items:\n`;
     
     for (const item of items) {
       const confBadge = item.confidence?.toLowerCase() === 'high' ? '🟢 High' : (item.confidence?.toLowerCase() === 'medium' ? '🟡 Medium' : '🔴 Low');
-      displayMessage += `• ${item.food} (${item.portion}) — ${item.calories} kcal (P:${item.protein}g C:${item.carbs}g F:${item.fat}g) [${confBadge}]\n`;
+      const safeFoodItem = escapeMarkdown(item.food);
+      const safePortion = escapeMarkdown(item.portion || "1 serving");
+      displayMessage += `• ${safeFoodItem} (${safePortion}) — ${item.calories} kcal (P:${item.protein}g C:${item.carbs}g F:${item.fat}g) [${confBadge}]\n`;
     }
     
     displayMessage += `\n━━━━━━━━━━━━━━━━━━━━\n`;
     displayMessage += `📊 Combined Total: *${totalCal} kcal*\n`;
     displayMessage += `Macros: P:${totalP}g | C:${totalC}g | F:${totalF}g\n\n`;
-    displayMessage += `💡 _${insight}_\n\n`;
+    if (safeInsight) {
+      displayMessage += `💡 _${safeInsight}_\n\n`;
+    }
     displayMessage += `Would you like to log this?`;
 
     await ctx.api.deleteMessage(ctx.chat.id, statusMsg.message_id);
@@ -707,7 +757,7 @@ bot.on("message:photo", async (ctx) => {
   const userId = ctx.from?.id;
   if (!userId) return;
 
-  await ensureUserProfile(userId);
+  await ensureUserProfile(userId, ctx.from?.first_name, ctx.from?.username);
   const statusMsg = await ctx.reply("🤖 Analyzing your food photo with Gemini AI...");
 
   try {
@@ -738,7 +788,7 @@ bot.on("message:voice", async (ctx) => {
   const userId = ctx.from?.id;
   if (!userId) return;
 
-  await ensureUserProfile(userId);
+  await ensureUserProfile(userId, ctx.from?.first_name, ctx.from?.username);
   const statusMsg = await ctx.reply("🎙️ Listening to your voice note & analyzing with Gemini AI...");
 
   try {
@@ -787,7 +837,8 @@ bot.callbackQuery(/^confirm:(.+)$/, async (ctx) => {
     calories: pending.calories,
     protein: pending.protein || 0,
     carbs: pending.carbs || 0,
-    fat: pending.fat || 0
+    fat: pending.fat || 0,
+    meal_type: pending.meal_type || getMealType()
   }).select().single();
 
   if (insertErr || !insertedLog) {
@@ -799,9 +850,10 @@ bot.callbackQuery(/^confirm:(.+)$/, async (ctx) => {
   const streakMessage = await updateStreakAndGetMessage(pending.user_id);
 
   const saveKeyboard = new InlineKeyboard().text("⭐ Save as Preset", `save_preset:${insertedLog.id}`);
+  const safeFood = escapeMarkdown(pending.food_name);
 
   await ctx.editMessageText(
-    `Logged: *${pending.food_name}* (${pending.calories} kcal) ✅\n` +
+    `Logged: *${safeFood}* (${pending.calories} kcal) ✅\n` +
     `Macros: P:${pending.protein}g | C:${pending.carbs}g | F:${pending.fat}g` +
     streakMessage,
     { parse_mode: "Markdown", reply_markup: saveKeyboard }
@@ -836,7 +888,8 @@ bot.callbackQuery(/^save_preset:(.+)$/, async (ctx) => {
     return ctx.reply("⚠️ Failed to save preset. It might already be saved.");
   }
 
-  await ctx.reply(`⭐ Saved *${log.food_name}* (${log.calories} kcal) to your presets! Use /presets anytime to quick-log it.`, { parse_mode: "Markdown" });
+  const safeFood = escapeMarkdown(log.food_name);
+  await ctx.reply(`⭐ Saved *${safeFood}* (${log.calories} kcal) to your presets! Use /presets anytime to quick-log it.`, { parse_mode: "Markdown" });
 });
 
 bot.callbackQuery(/^log_preset:(.+)$/, async (ctx) => {
@@ -859,7 +912,8 @@ bot.callbackQuery(/^log_preset:(.+)$/, async (ctx) => {
     calories: preset.calories,
     protein: preset.protein,
     carbs: preset.carbs,
-    fat: preset.fat
+    fat: preset.fat,
+    meal_type: getMealType()
   });
 
   if (insertErr) {
@@ -868,9 +922,10 @@ bot.callbackQuery(/^log_preset:(.+)$/, async (ctx) => {
   }
 
   const streakMessage = await updateStreakAndGetMessage(preset.user_id);
+  const safeFood = escapeMarkdown(preset.food_name);
 
   await ctx.reply(
-    `Logged: *${preset.food_name}* (${preset.calories} kcal) ✅\n` +
+    `Logged: *${safeFood}* (${preset.calories} kcal) ✅\n` +
     `Macros: P:${preset.protein}g | C:${preset.carbs}g | F:${preset.fat}g` +
     streakMessage,
     { parse_mode: "Markdown" }
@@ -889,7 +944,8 @@ bot.callbackQuery(/^del_preset:(.+)$/, async (ctx) => {
 
   await supabase.from("user_presets").delete().eq("id", presetId);
 
-  await ctx.reply(`🗑️ Deleted preset: *${preset?.food_name || "Item"}*`, { parse_mode: "Markdown" });
+  const safeFood = escapeMarkdown(preset?.food_name || "Item");
+  await ctx.reply(`🗑️ Deleted preset: *${safeFood}*`, { parse_mode: "Markdown" });
 });
 
 bot.callbackQuery(/^cancel:(.+)$/, async (ctx) => {
@@ -900,8 +956,17 @@ bot.callbackQuery(/^cancel:(.+)$/, async (ctx) => {
 });
 
 bot.callbackQuery(/^edit:(.+)$/, async (ctx) => {
+  const pendingId = ctx.match[1];
+  const userId = ctx.from?.id;
+  if (!userId) return;
   await ctx.answerCallbackQuery();
-  await ctx.reply("To customize calories, please reply directly to *this message* with the number of calories.", { parse_mode: "Markdown" });
+
+  await supabase
+    .from("user_profiles")
+    .update({ editing_pending_id: pendingId })
+    .eq("user_id", userId);
+
+  await ctx.reply("To customize calories, please reply with the updated calorie number (e.g. 350).", { parse_mode: "Markdown" });
 });
 
 // ── Text Handler for Calories Replies & Text Logs ────────────────────────────
@@ -910,24 +975,35 @@ bot.on("message:text", async (ctx) => {
   const userId = ctx.from?.id;
   if (!userId) return;
 
-  const replyTo = ctx.message.reply_to_message;
-  
-  if (replyTo && replyTo.text?.includes("please reply directly to this message")) {
-    const newCalories = parseInt(ctx.message.text.trim());
+  await ensureUserProfile(userId, ctx.from?.first_name, ctx.from?.username);
+
+  const { data: profile } = await supabase
+    .from("user_profiles")
+    .select("editing_pending_id")
+    .eq("user_id", userId)
+    .maybeSingle();
+
+  const activeEditingId = profile?.editing_pending_id;
+
+  if (activeEditingId) {
+    const textVal = ctx.message.text.trim();
+    const newCalories = parseInt(textVal);
+
     if (isNaN(newCalories) || newCalories < 0) {
-      return ctx.reply("Please reply with a valid number (e.g. 280).");
+      return ctx.reply("Please enter a valid number for calories (e.g. 280).");
     }
+
+    // Reset editing state immediately
+    await supabase.from("user_profiles").update({ editing_pending_id: null }).eq("user_id", userId);
 
     const { data: pending } = await supabase
       .from("pending_food_logs")
       .select("*")
-      .eq("user_id", userId)
-      .order("created_at", { ascending: false })
-      .limit(1)
+      .eq("id", activeEditingId)
       .maybeSingle();
 
     if (!pending) {
-      return ctx.reply("⚠️ Could not find a pending food log to edit.");
+      return ctx.reply("⚠️ Could not find the pending food log to edit. It may have expired or already been saved.");
     }
 
     const scaleRatio = pending.calories > 0 ? (newCalories / pending.calories) : 1;
@@ -941,20 +1017,22 @@ bot.on("message:text", async (ctx) => {
       calories: newCalories,
       protein: scaledProtein,
       carbs: scaledCarbs,
-      fat: scaledFat
+      fat: scaledFat,
+      meal_type: pending.meal_type || getMealType()
     }).select().single();
 
     if (insertErr || !insertedLog) {
       return ctx.reply("⚠️ Failed to save custom calories log.");
     }
 
-    await supabase.from("pending_food_logs").delete().eq("id", pending.id);
+    await supabase.from("pending_food_logs").delete().eq("id", activeEditingId);
     const streakMessage = await updateStreakAndGetMessage(userId);
 
     const saveKeyboard = new InlineKeyboard().text("⭐ Save as Preset", `save_preset:${insertedLog.id}`);
+    const safeFood = escapeMarkdown(pending.food_name);
 
     return ctx.reply(
-      `Logged: *${pending.food_name}* with *${newCalories} kcal* ✅\n` +
+      `Logged: *${safeFood}* with *${newCalories} kcal* ✅\n` +
       `Scaled Macros: P:${scaledProtein}g | C:${scaledCarbs}g | F:${scaledFat}g` +
       streakMessage,
       { parse_mode: "Markdown", reply_markup: saveKeyboard }
@@ -971,7 +1049,7 @@ bot.on("message:text", async (ctx) => {
 
 async function generateSarcasticAICoaching(userId: number, type: "daily" | "weekly"): Promise<string | null> {
   try {
-    const geminiUrl = `https://generativelanguage.googleapis.com/v1beta/models/gemini-3.1-flash-lite:generateContent?key=${geminiApiKey}`;
+    const geminiUrl = `https://generativelanguage.googleapis.com/v1beta/models/gemini-1.5-flash:generateContent?key=${geminiApiKey}`;
 
     if (type === "daily") {
       const sgtStartIso = getSGTStartOfDayISO();
@@ -1048,7 +1126,8 @@ async function sendCronReminders(type: "midday" | "night" | "weekly") {
       const weeklyCoaching = await generateSarcasticAICoaching(userId, "weekly");
       if (weeklyCoaching) {
         try {
-          await bot.api.sendMessage(userId, `🤖 *Weekly AI Nutrition Roast & Review (SGT)* 🥑\n\n${weeklyCoaching}`, { parse_mode: "Markdown" });
+          const safeCoaching = escapeMarkdown(weeklyCoaching);
+          await bot.api.sendMessage(userId, `🤖 *Weekly AI Nutrition Roast & Review (SGT)* 🥑\n\n${safeCoaching}`, { parse_mode: "Markdown" });
         } catch (err) { console.error(`Failed to send weekly coaching to ${userId}:`, err); }
       }
       continue;
@@ -1074,7 +1153,8 @@ async function sendCronReminders(type: "midday" | "night" | "weekly") {
       } catch (err) { console.error(`Failed to send midday message to ${userId}:`, err); }
     } else if (type === "night") {
       const dailyCoaching = await generateSarcasticAICoaching(userId, "daily");
-      const coachingText = dailyCoaching ? `\n\n😏 *Daily AI Roast:*\n_${dailyCoaching}_` : "";
+      const safeDailyCoaching = dailyCoaching ? escapeMarkdown(dailyCoaching) : null;
+      const coachingText = safeDailyCoaching ? `\n\n😏 *Daily AI Roast:*\n_${safeDailyCoaching}_` : "";
 
       try {
         const text = logCount === 0 
@@ -1090,6 +1170,8 @@ async function sendCronReminders(type: "midday" | "night" | "weekly") {
 // ── Serve ─────────────────────────────────────────────────────────────────────
 
 const handleUpdate = webhookCallback(bot, "std/http");
+const telegramSecretToken = Deno.env.get("TELEGRAM_SECRET_TOKEN");
+const cronSecret = Deno.env.get("CRON_SECRET");
 
 Deno.serve(async (req) => {
   try {
@@ -1097,16 +1179,27 @@ Deno.serve(async (req) => {
     const cronType = url.searchParams.get("cron");
 
     if (cronType === "midday" || cronType === "night" || cronType === "weekly") {
+      const reqSecret = url.searchParams.get("secret");
+      if (cronSecret && reqSecret !== cronSecret) {
+        return new Response("Unauthorized cron trigger", { status: 401 });
+      }
       await sendCronReminders(cronType as any);
       return new Response(`Cron ${cronType} executed successfully`, { status: 200 });
     }
 
-    // Explicitly ensure commands are registered with Telegram API
-    await registerBotCommands();
+    if (telegramSecretToken) {
+      const incomingSecret = req.headers.get("x-telegram-bot-api-secret-token");
+      if (incomingSecret !== telegramSecretToken) {
+        return new Response("Unauthorized webhook request", { status: 401 });
+      }
+    }
+
+    // Register bot commands once on startup
+    await registerBotCommandsOnce();
 
     return await handleUpdate(req);
   } catch (err) {
-    console.error(err);
+    console.error("Unhandled server error:", err);
     return new Response(String(err), { status: 500 });
   }
 });
