@@ -43,7 +43,7 @@ async function registerBotCommandsOnce() {
       { command: "leaderboard", description: "🏆 Group Calorie Leaderboard" },
       { command: "joinleaderboard", description: "👥 Join Group Leaderboard" },
       { command: "reminders", description: "🔔 Toggle Daily Alerts" },
-      { command: "delete", description: "❌ Delete Last Logged Item" },
+      { command: "delete", description: "🗑️ Select & Delete Today's Food" },
       { command: "target", description: "🎯 Update Calorie Goal" },
       { command: "start", description: "👋 Welcome & Instructions" }
     ]);
@@ -224,6 +224,7 @@ bot.command("start", async (ctx) => {
     `• 📊 Use /history for your 7-day calorie chart.\n` +
     `• 🏆 Use /joinleaderboard & /leaderboard in group chats!\n` +
     `• ⚖️ Use /weight <number> & /progress for weight tracking.\n` +
+    `• 🗑️ Use /delete to select & delete any logged food today.\n` +
     `• 🔔 Use /reminders for opt-in AI coaching & reminders.`,
     { parse_mode: "Markdown", reply_markup: keyboard }
   );
@@ -427,21 +428,38 @@ bot.command("delete", async (ctx) => {
   const userId = ctx.from?.id;
   if (!userId) return;
 
-  const { data: lastLog, error } = await supabase
-    .from("food_logs")
-    .select("id, food_name, calories")
-    .eq("user_id", userId)
-    .order("created_at", { ascending: false })
-    .limit(1)
-    .maybeSingle();
+  await ensureUserProfile(userId, ctx.from?.first_name, ctx.from?.username);
+  const sgtStartIso = getSGTStartOfDayISO();
 
-  if (error || !lastLog) {
-    return ctx.reply("No logged foods to delete.");
+  const { data: logs, error } = await supabase
+    .from("food_logs")
+    .select("id, food_name, calories, created_at")
+    .eq("user_id", userId)
+    .gte("created_at", sgtStartIso)
+    .order("created_at", { ascending: false });
+
+  if (error) {
+    console.error("Error fetching today's logs for deletion:", error);
+    return ctx.reply("Failed to load today's food logs.");
   }
 
-  await supabase.from("food_logs").delete().eq("id", lastLog.id);
-  const safeFood = escapeMarkdown(lastLog.food_name);
-  await ctx.reply(`🗑️ Deleted: *${safeFood}* (${lastLog.calories} kcal).`, { parse_mode: "Markdown" });
+  if (!logs || logs.length === 0) {
+    return ctx.reply("_No food logged today to delete._", { parse_mode: "Markdown" });
+  }
+
+  let text = `🗑️ *Select a meal to delete from today:*\n\n`;
+  const keyboard = new InlineKeyboard();
+
+  logs.forEach((log) => {
+    const safeFood = escapeMarkdown(log.food_name);
+    text += `• *${safeFood}* — ${log.calories} kcal\n`;
+    const btnLabel = `❌ ${log.food_name.length > 20 ? log.food_name.substring(0, 18) + "…" : log.food_name} (${log.calories} kcal)`;
+    keyboard.text(btnLabel, `delfood:${log.id}`).row();
+  });
+
+  keyboard.text("🚫 Cancel", "cancel_delete");
+
+  await ctx.reply(text, { parse_mode: "Markdown", reply_markup: keyboard });
 });
 
 bot.command("weight", async (ctx) => {
@@ -655,7 +673,7 @@ async function processFoodWithGemini(
   mimeType?: string
 ) {
   try {
-    const geminiUrl = `https://generativelanguage.googleapis.com/v1beta/models/gemini-1.5-flash:generateContent?key=${geminiApiKey}`;
+    const geminiUrl = `https://generativelanguage.googleapis.com/v1beta/models/gemini-3.1-flash-lite:generateContent?key=${geminiApiKey}`;
     
     const isAudio = mimeType?.startsWith("audio/");
     const isImage = mimeType?.startsWith("image/");
@@ -995,6 +1013,44 @@ bot.callbackQuery(/^edit:(.+)$/, async (ctx) => {
   await ctx.reply("To customize calories, please reply with the updated calorie number (e.g. 350).", { parse_mode: "Markdown" });
 });
 
+bot.callbackQuery(/^delfood:(.+)$/, async (ctx) => {
+  const logId = ctx.match[1];
+  const userId = ctx.from?.id;
+  if (!userId) return;
+
+  await ctx.answerCallbackQuery();
+
+  const { data: log, error: fetchErr } = await supabase
+    .from("food_logs")
+    .select("food_name, calories")
+    .eq("id", logId)
+    .eq("user_id", userId)
+    .maybeSingle();
+
+  if (fetchErr || !log) {
+    return ctx.editMessageText("⚠️ This food log could not be found or was already deleted.");
+  }
+
+  const { error: delErr } = await supabase
+    .from("food_logs")
+    .delete()
+    .eq("id", logId)
+    .eq("user_id", userId);
+
+  if (delErr) {
+    console.error("Error deleting food log:", delErr);
+    return ctx.editMessageText("⚠️ Failed to delete food item. Please try again.");
+  }
+
+  const safeFood = escapeMarkdown(log.food_name);
+  await ctx.editMessageText(`🗑️ Deleted: *${safeFood}* (${log.calories} kcal) from today's log. ✅`, { parse_mode: "Markdown" });
+});
+
+bot.callbackQuery("cancel_delete", async (ctx) => {
+  await ctx.answerCallbackQuery();
+  await ctx.editMessageText("Deletion cancelled. ❌");
+});
+
 // ── Text Handler for Calories Replies & Text Logs ────────────────────────────
 
 bot.on("message:text", async (ctx) => {
@@ -1075,7 +1131,7 @@ bot.on("message:text", async (ctx) => {
 
 async function generateSarcasticAICoaching(userId: number, type: "daily" | "weekly"): Promise<string | null> {
   try {
-    const geminiUrl = `https://generativelanguage.googleapis.com/v1beta/models/gemini-1.5-flash:generateContent?key=${geminiApiKey}`;
+    const geminiUrl = `https://generativelanguage.googleapis.com/v1beta/models/gemini-3.1-flash-lite:generateContent?key=${geminiApiKey}`;
 
     if (type === "daily") {
       const sgtStartIso = getSGTStartOfDayISO();
