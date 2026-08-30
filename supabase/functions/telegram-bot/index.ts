@@ -37,10 +37,13 @@ function renderProgressBar(current: number, target: number, length: number = 10)
   return `[${bar}] ${pct}%`;
 }
 
+// Web App URL hosted on GitHub Pages
+const WEBAPP_URL = "https://jasontan89.github.io/calorie-tracker-bot/";
+
 // Global flag to track command registration state
 let commandsRegistered = false;
 
-// Helper function to register bot menu commands once on startup
+// Helper function to register bot menu commands & Web App chat button once on startup
 async function registerBotCommandsOnce() {
   if (commandsRegistered) return;
   try {
@@ -58,6 +61,20 @@ async function registerBotCommandsOnce() {
       { command: "target", description: "🎯 Update Calorie Goal" },
       { command: "start", description: "👋 Welcome & Instructions" }
     ]);
+
+    try {
+      await bot.api.setChatMenuButton({
+        menu_button: {
+          type: "web_app",
+          text: "📊 Dashboard",
+          web_app: { url: WEBAPP_URL }
+        }
+      });
+      console.log("Chat menu button registered for Web App.");
+    } catch (btnErr) {
+      console.error("Failed to set chat menu button:", btnErr);
+    }
+
     commandsRegistered = true;
     console.log("Persistent bot commands menu registered successfully.");
   } catch (err) {
@@ -316,7 +333,9 @@ async function renderHistoryView(ctx: any, userId: number) {
 
   textReport += `\n_Tap a date below to inspect individual meals:_`;
 
-  const keyboard = new InlineKeyboard();
+  const keyboard = new InlineKeyboard()
+    .webApp("📱 Open Interactive Dashboard", WEBAPP_URL)
+    .row();
   // Row 1: 4 older days
   for (let i = 0; i < 4; i++) {
     const dStr = sortedDates[i];
@@ -379,6 +398,8 @@ bot.command("start", async (ctx) => {
   const name = escapeMarkdown(ctx.from?.first_name ?? "there");
 
   const keyboard = new InlineKeyboard()
+    .webApp("📱 Open Interactive Dashboard", WEBAPP_URL)
+    .row()
     .text("⭐ View Saved Presets", "open_presets")
     .text("🤖 AI Coach Style", "open_persona");
 
@@ -498,6 +519,8 @@ bot.command("today", async (ctx) => {
   message += `• 🥑 *Fat:* ${totalFat} / ${macroTargets.fat}g\n   ${fBar}`;
 
   const keyboard = new InlineKeyboard()
+    .webApp("📱 Open Interactive Dashboard", WEBAPP_URL)
+    .row()
     .text("⭐ Presets", "open_presets")
     .text("🗑️ Delete Meal", "open_delete")
     .row()
@@ -1505,6 +1528,75 @@ async function sendCronReminders(type: "midday" | "night" | "weekly") {
   }
 }
 
+// ── Telegram WebApp Authentication Validator ─────────────────────────────────
+
+async function validateTelegramInitData(initData: string, botToken: string): Promise<{ valid: boolean; user?: any }> {
+  try {
+    if (!initData) return { valid: false };
+    const params = new URLSearchParams(initData);
+    const hash = params.get("hash");
+    if (!hash) return { valid: false };
+
+    params.delete("hash");
+
+    const keys = Array.from(params.keys()).sort();
+    const checkString = keys.map((k) => `${k}=${params.get(k)}`).join("\n");
+
+    const encoder = new TextEncoder();
+    
+    // secret_key = HMAC-SHA-256("WebAppData", botToken)
+    const secretKeyMaterial = await crypto.subtle.importKey(
+      "raw",
+      encoder.encode("WebAppData"),
+      { name: "HMAC", hash: "SHA-256" },
+      false,
+      ["sign"]
+    );
+    const secretKeyBytes = await crypto.subtle.sign(
+      "HMAC",
+      secretKeyMaterial,
+      encoder.encode(botToken)
+    );
+
+    // key for data-check-string = secretKeyBytes
+    const dataKey = await crypto.subtle.importKey(
+      "raw",
+      secretKeyBytes,
+      { name: "HMAC", hash: "SHA-256" },
+      false,
+      ["sign"]
+    );
+
+    const calculatedSigBytes = await crypto.subtle.sign(
+      "HMAC",
+      dataKey,
+      encoder.encode(checkString)
+    );
+
+    const calculatedHash = Array.from(new Uint8Array(calculatedSigBytes))
+      .map((b) => b.toString(16).padStart(2, "0"))
+      .join("");
+
+    if (calculatedHash.toLowerCase() !== hash.toLowerCase()) {
+      return { valid: false };
+    }
+
+    const authDate = parseInt(params.get("auth_date") || "0", 10);
+    const now = Math.floor(Date.now() / 1000);
+    // Allow up to 48 hours for valid session token
+    if (authDate > 0 && now - authDate > 86400 * 2) {
+      return { valid: false };
+    }
+
+    const userRaw = params.get("user");
+    const user = userRaw ? JSON.parse(userRaw) : null;
+    return { valid: true, user };
+  } catch (err) {
+    console.error("InitData validation error:", err);
+    return { valid: false };
+  }
+}
+
 // ── Serve ─────────────────────────────────────────────────────────────────────
 
 const handleUpdate = webhookCallback(bot, "std/http");
@@ -1512,8 +1604,201 @@ const telegramSecretToken = Deno.env.get("TELEGRAM_SECRET_TOKEN");
 const cronSecret = Deno.env.get("CRON_SECRET");
 
 Deno.serve(async (req) => {
+  const corsHeaders = {
+    "Access-Control-Allow-Origin": "*",
+    "Access-Control-Allow-Methods": "GET, POST, OPTIONS",
+    "Access-Control-Allow-Headers": "Authorization, Content-Type, X-Telegram-Init-Data, Accept",
+  };
+
+  if (req.method === "OPTIONS") {
+    return new Response(null, { headers: corsHeaders, status: 204 });
+  }
+
   try {
     const url = new URL(req.url);
+    const apiAction = url.searchParams.get("api");
+
+    // ── Web App REST API Router ───────────────────────────────────────────────
+    if (apiAction) {
+      const authHeader = req.headers.get("authorization") || "";
+      const customHeader = req.headers.get("x-telegram-init-data") || "";
+      const queryInitData = url.searchParams.get("initData") || "";
+      
+      let initData = "";
+      if (authHeader.startsWith("Bearer ")) {
+        initData = authHeader.substring(7);
+      } else if (customHeader) {
+        initData = customHeader;
+      } else if (queryInitData) {
+        initData = queryInitData;
+      }
+
+      const auth = await validateTelegramInitData(initData, token);
+      if (!auth.valid || !auth.user?.id) {
+        return new Response(JSON.stringify({ error: "Unauthorized: Invalid Telegram authentication" }), {
+          status: 401,
+          headers: { ...corsHeaders, "Content-Type": "application/json" }
+        });
+      }
+
+      const userId = Number(auth.user.id);
+      await ensureUserProfile(userId, auth.user.first_name, auth.user.username);
+
+      if (apiAction === "dashboard") {
+        const { data: profile } = await supabase
+          .from("user_profiles")
+          .select("*")
+          .eq("user_id", userId)
+          .maybeSingle();
+
+        const target = profile?.daily_target ?? 2000;
+        const macroTargets = getMacroTargets(target, profile);
+        const sgtStartIso = getSGTStartOfDayISO();
+
+        // Today's logs
+        const { data: todayLogs } = await supabase
+          .from("food_logs")
+          .select("id, food_name, calories, protein, carbs, fat, meal_type, created_at")
+          .eq("user_id", userId)
+          .gte("created_at", sgtStartIso)
+          .order("created_at", { ascending: true });
+
+        const totalCalories = (todayLogs ?? []).reduce((sum, item) => sum + item.calories, 0);
+        const totalProtein = (todayLogs ?? []).reduce((sum, item) => sum + (item.protein || 0), 0);
+        const totalCarbs = (todayLogs ?? []).reduce((sum, item) => sum + (item.carbs || 0), 0);
+        const totalFat = (todayLogs ?? []).reduce((sum, item) => sum + (item.fat || 0), 0);
+
+        // 7-day history
+        const sevenDaysAgoDate = new Date(new Date().getTime() - 6 * 24 * 60 * 60 * 1000);
+        const sevenDaysAgoIso = getSGTStartOfDayISO(sevenDaysAgoDate);
+
+        const { data: pastLogs } = await supabase
+          .from("food_logs")
+          .select("id, food_name, calories, protein, carbs, fat, meal_type, created_at")
+          .eq("user_id", userId)
+          .gte("created_at", sevenDaysAgoIso)
+          .order("created_at", { ascending: true });
+
+        const historyMap: Record<string, { date: string; label: string; calories: number; protein: number; carbs: number; fat: number; logs: any[] }> = {};
+        for (let i = 6; i >= 0; i--) {
+          const d = new Date(new Date().getTime() - i * 24 * 60 * 60 * 1000);
+          const dateStr = getSGTDateStr(d);
+          historyMap[dateStr] = {
+            date: dateStr,
+            label: dateStr.substring(5),
+            calories: 0,
+            protein: 0,
+            carbs: 0,
+            fat: 0,
+            logs: []
+          };
+        }
+
+        (pastLogs ?? []).forEach((log) => {
+          const dStr = getSGTDateStr(new Date(log.created_at));
+          if (historyMap[dStr]) {
+            historyMap[dStr].calories += log.calories || 0;
+            historyMap[dStr].protein += log.protein || 0;
+            historyMap[dStr].carbs += log.carbs || 0;
+            historyMap[dStr].fat += log.fat || 0;
+            historyMap[dStr].logs.push(log);
+          }
+        });
+
+        // Presets
+        const { data: presets } = await supabase
+          .from("user_presets")
+          .select("*")
+          .eq("user_id", userId)
+          .order("created_at", { ascending: false });
+
+        return new Response(JSON.stringify({
+          profile: profile || { user_id: userId, daily_target: 2000, streak_count: 0, persona: "sarcastic" },
+          todayDate: getSGTDateStr(),
+          todayTotals: { calories: totalCalories, protein: totalProtein, carbs: totalCarbs, fat: totalFat },
+          macroTargets: macroTargets,
+          todayLogs: todayLogs || [],
+          history7d: Object.values(historyMap),
+          presets: presets || []
+        }), {
+          status: 200,
+          headers: { ...corsHeaders, "Content-Type": "application/json" }
+        });
+      }
+
+      if (apiAction === "delete_food" && req.method === "POST") {
+        const body = await req.json();
+        const logId = body?.log_id;
+        if (!logId) {
+          return new Response(JSON.stringify({ error: "Missing log_id" }), { status: 400, headers: { ...corsHeaders, "Content-Type": "application/json" } });
+        }
+        await supabase.from("food_logs").delete().eq("id", logId).eq("user_id", userId);
+        return new Response(JSON.stringify({ success: true }), { headers: { ...corsHeaders, "Content-Type": "application/json" } });
+      }
+
+      if (apiAction === "log_preset" && req.method === "POST") {
+        const body = await req.json();
+        const presetId = body?.preset_id;
+        if (!presetId) {
+          return new Response(JSON.stringify({ error: "Missing preset_id" }), { status: 400, headers: { ...corsHeaders, "Content-Type": "application/json" } });
+        }
+        const { data: p, error: pErr } = await supabase.from("user_presets").select("*").eq("id", presetId).eq("user_id", userId).maybeSingle();
+        if (pErr || !p) {
+          return new Response(JSON.stringify({ error: "Preset not found" }), { status: 404, headers: { ...corsHeaders, "Content-Type": "application/json" } });
+        }
+
+        const { data: inserted, error: insErr } = await supabase.from("food_logs").insert({
+          user_id: userId,
+          food_name: p.food_name,
+          calories: p.calories,
+          protein: p.protein,
+          carbs: p.carbs,
+          fat: p.fat,
+          meal_type: getMealType()
+        }).select().single();
+
+        if (insErr) {
+          return new Response(JSON.stringify({ error: "Failed to log preset" }), { status: 500, headers: { ...corsHeaders, "Content-Type": "application/json" } });
+        }
+
+        await updateStreakAndGetMessage(userId);
+        return new Response(JSON.stringify({ success: true, log: inserted }), { headers: { ...corsHeaders, "Content-Type": "application/json" } });
+      }
+
+      if (apiAction === "delete_preset" && req.method === "POST") {
+        const body = await req.json();
+        const presetId = body?.preset_id;
+        if (!presetId) {
+          return new Response(JSON.stringify({ error: "Missing preset_id" }), { status: 400, headers: { ...corsHeaders, "Content-Type": "application/json" } });
+        }
+        await supabase.from("user_presets").delete().eq("id", presetId).eq("user_id", userId);
+        return new Response(JSON.stringify({ success: true }), { headers: { ...corsHeaders, "Content-Type": "application/json" } });
+      }
+
+      if (apiAction === "update_persona" && req.method === "POST") {
+        const body = await req.json();
+        const persona = body?.persona;
+        if (!persona) {
+          return new Response(JSON.stringify({ error: "Missing persona" }), { status: 400, headers: { ...corsHeaders, "Content-Type": "application/json" } });
+        }
+        await supabase.from("user_profiles").update({ persona }).eq("user_id", userId);
+        return new Response(JSON.stringify({ success: true, persona }), { headers: { ...corsHeaders, "Content-Type": "application/json" } });
+      }
+
+      if (apiAction === "update_target" && req.method === "POST") {
+        const body = await req.json();
+        const targetVal = parseInt(body?.target, 10);
+        if (!targetVal || targetVal <= 0) {
+          return new Response(JSON.stringify({ error: "Invalid target" }), { status: 400, headers: { ...corsHeaders, "Content-Type": "application/json" } });
+        }
+        await supabase.from("user_profiles").update({ daily_target: targetVal }).eq("user_id", userId);
+        return new Response(JSON.stringify({ success: true, target: targetVal }), { headers: { ...corsHeaders, "Content-Type": "application/json" } });
+      }
+
+      return new Response(JSON.stringify({ error: "Unknown API action" }), { status: 404, headers: { ...corsHeaders, "Content-Type": "application/json" } });
+    }
+
+    // ── Cron Reminders ────────────────────────────────────────────────────────
     const cronType = url.searchParams.get("cron");
 
     if (cronType === "midday" || cronType === "night" || cronType === "weekly") {
@@ -1525,6 +1810,7 @@ Deno.serve(async (req) => {
       return new Response(`Cron ${cronType} executed successfully`, { status: 200 });
     }
 
+    // ── Telegram Webhook ──────────────────────────────────────────────────────
     if (telegramSecretToken) {
       const incomingSecret = req.headers.get("x-telegram-bot-api-secret-token");
       if (incomingSecret !== telegramSecretToken) {
@@ -1532,7 +1818,7 @@ Deno.serve(async (req) => {
       }
     }
 
-    // Register bot commands once on startup
+    // Register bot commands & Chat Menu Button once on startup
     await registerBotCommandsOnce();
 
     return await handleUpdate(req);

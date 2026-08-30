@@ -1,0 +1,677 @@
+/* ── Telegram Web App Theme Variables & CSS Reset ────────────────────────── */
+:root {
+  --bg-color: var(--tg-theme-bg-color, #0f172a);
+  --secondary-bg-color: var(--tg-theme-secondary-bg-color, #1e293b);
+  --text-color: var(--tg-theme-text-color, #f8fafc);
+  --hint-color: var(--tg-theme-hint-color, #94a3b8);
+  --link-color: var(--tg-theme-link-color, #38bdf8);
+  --button-color: var(--tg-theme-button-color, #10b981);
+  --button-text-color: var(--tg-theme-button-text-color, #ffffff);
+  
+  --primary-accent: #10b981;
+  --protein-color: #3b82f6;
+  --carbs-color: #f59e0b;
+  --fat-color: #ec4899;
+  --danger-color: #ef4444;
+  --card-border: rgba(255, 255, 255, 0.08);
+  --card-shadow: 0 4px 12px rgba(0, 0, 0, 0.25);
+  --radius-lg: 16px;
+  --radius-md: 12px;
+  --radius-sm: 8px;
+}
+
+* {
+  box-sizing: border-box;
+  margin: 0;
+  padding: 0;
+  -webkit-tap-highlight-color: transparent;
+  font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+}
+
+body {
+  background-color: var(--bg-color);
+  color: var(--text-color);
+  min-height: 100vh;
+  padding: 12px 14px 60px 14px;
+  overflow-x: hidden;
+  user-select: none;
+}
+
+/* ── Container ─────────────────────────────────────────────────────────────── */
+.app-container {
+  max-width: 520px;
+  margin: 0 auto;
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+}
+
+/* ── App Header ────────────────────────────────────────────────────────────── */
+.app-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  padding: 6px 4px 10px 4px;
+}
+
+.user-info {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+
+.avatar {
+  width: 42px;
+  height: 42px;
+  border-radius: 50%;
+  background: linear-gradient(135deg, #10b981, #065f46);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 20px;
+  box-shadow: 0 2px 8px rgba(16, 185, 129, 0.3);
+}
+
+.user-details h2 {
+  font-size: 17px;
+  font-weight: 700;
+  line-height: 1.2;
+}
+
+.date-badge {
+  font-size: 11px;
+  color: var(--hint-color);
+}
+
+.header-badges {
+  display: flex;
+  gap: 6px;
+}
+
+.badge {
+  font-size: 12px;
+  font-weight: 600;
+  padding: 4px 9px;
+  border-radius: 20px;
+  background: var(--secondary-bg-color);
+  border: 1px solid var(--card-border);
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+}
+
+.streak-badge {
+  background: rgba(245, 158, 11, 0.15);
+  color: #f59e0b;
+  border-color: rgba(245, 158, 11, 0.3);
+}
+
+.target-badge {
+  background: rgba(16, 185, 129, 0.15);
+  color: #10b981;
+  border-color: rgba(16, 185, 129, 0.3);
+}
+
+/* ── Navigation Tabs ───────────────────────────────────────────────────────── */
+.nav-tabs {
+  display: flex;
+  background: var(--secondary-bg-color);
+  padding: 4px;
+  border-radius: var(--radius-md);
+  border: 1px solid var(--card-border);
+  gap: 4px;
+}
+
+.nav-tab {
+  flex: 1;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 6px;
+  background: transparent;
+  border: none;
+  color: var(--hint-color);
+  padding: 8px 12px;
+  border-radius: var(--radius-sm);
+  font-size: 13px;
+  font-weight: 600;
+  cursor: pointer;
+  transition: all 0.2s ease;
+}
+
+.nav-tab.active {
+  background: var(--bg-color);
+  color: var(--text-color);
+  box-shadow: 0 2px 6px rgba(0, 0, 0, 0.2);
+}
+
+.tab-icon {
+  font-size: 14px;
+}
+
+/* ── Tab Content ───────────────────────────────────────────────────────────── */
+.tab-content {
+  display: none;
+  flex-direction: column;
+  gap: 14px;
+}
+
+.tab-content.active {
+  display: flex;
+}
+
+/* ── Cards ─────────────────────────────────────────────────────────────────── */
+.card {
+  background: var(--secondary-bg-color);
+  border-radius: var(--radius-lg);
+  border: 1px solid var(--card-border);
+  padding: 16px;
+  box-shadow: var(--card-shadow);
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+
+.card-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+}
+
+.card-header h3 {
+  font-size: 15px;
+  font-weight: 700;
+}
+
+.card-subtitle {
+  font-size: 12px;
+  color: var(--hint-color);
+  margin-top: -6px;
+}
+
+/* ── Calorie Summary Card ──────────────────────────────────────────────────── */
+.calorie-progress-container {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  padding: 4px 0;
+}
+
+.calorie-numbers {
+  display: flex;
+  align-items: baseline;
+  gap: 6px;
+}
+
+.current-calories {
+  font-size: 32px;
+  font-weight: 800;
+  color: var(--text-color);
+}
+
+.target-calories {
+  font-size: 16px;
+  color: var(--hint-color);
+}
+
+.progress-bar-bg {
+  width: 100%;
+  height: 12px;
+  background: rgba(255, 255, 255, 0.08);
+  border-radius: 6px;
+  overflow: hidden;
+}
+
+.progress-bar-fill {
+  height: 100%;
+  background: linear-gradient(90deg, #10b981, #059669);
+  border-radius: 6px;
+  transition: width 0.6s cubic-bezier(0.4, 0, 0.2, 1);
+}
+
+.progress-bar-fill.over-target {
+  background: linear-gradient(90deg, #ef4444, #b91c1c);
+}
+
+.calorie-subtext {
+  font-size: 12px;
+  font-weight: 500;
+  color: var(--hint-color);
+}
+
+/* ── Macros Grid ───────────────────────────────────────────────────────────── */
+.macros-grid {
+  display: grid;
+  grid-template-columns: repeat(3, 1fr);
+  gap: 8px;
+  margin-top: 4px;
+}
+
+.macro-card {
+  background: var(--bg-color);
+  padding: 10px 8px;
+  border-radius: var(--radius-md);
+  border: 1px solid var(--card-border);
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+.macro-header {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+}
+
+.macro-icon {
+  font-size: 13px;
+}
+
+.macro-title {
+  font-size: 11px;
+  font-weight: 600;
+  color: var(--hint-color);
+}
+
+.macro-value {
+  font-size: 12px;
+  font-weight: 700;
+}
+
+.macro-bar-bg {
+  width: 100%;
+  height: 6px;
+  background: rgba(255, 255, 255, 0.08);
+  border-radius: 3px;
+  overflow: hidden;
+  margin-top: 2px;
+}
+
+.macro-bar-fill {
+  height: 100%;
+  border-radius: 3px;
+  transition: width 0.5s ease;
+}
+
+.protein-fill { background: var(--protein-color); }
+.carbs-fill { background: var(--carbs-color); }
+.fat-fill { background: var(--fat-color); }
+
+/* ── Chart Section ─────────────────────────────────────────────────────────── */
+.chart-toggles {
+  display: flex;
+  background: var(--bg-color);
+  border-radius: var(--radius-sm);
+  padding: 2px;
+}
+
+.toggle-btn {
+  background: transparent;
+  border: none;
+  color: var(--hint-color);
+  font-size: 11px;
+  font-weight: 600;
+  padding: 4px 8px;
+  border-radius: 6px;
+  cursor: pointer;
+}
+
+.toggle-btn.active {
+  background: var(--secondary-bg-color);
+  color: var(--text-color);
+}
+
+.chart-container {
+  position: relative;
+  height: 190px;
+  width: 100%;
+}
+
+.date-pills-row {
+  display: flex;
+  gap: 6px;
+  overflow-x: auto;
+  padding: 4px 2px 2px 2px;
+  scrollbar-width: none;
+}
+
+.date-pills-row::-webkit-scrollbar {
+  display: none;
+}
+
+.date-pill {
+  flex: 0 0 auto;
+  background: var(--bg-color);
+  border: 1px solid var(--card-border);
+  padding: 5px 9px;
+  border-radius: 20px;
+  font-size: 11px;
+  font-weight: 600;
+  color: var(--hint-color);
+  cursor: pointer;
+  transition: all 0.2s ease;
+}
+
+.date-pill.active {
+  background: var(--primary-accent);
+  color: #ffffff;
+  border-color: var(--primary-accent);
+}
+
+/* ── Meal Logs List ────────────────────────────────────────────────────────── */
+.meals-list {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.meal-item-card {
+  background: var(--bg-color);
+  border: 1px solid var(--card-border);
+  border-radius: var(--radius-md);
+  padding: 10px 12px;
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  animation: fadeIn 0.25s ease;
+}
+
+.meal-main-info {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+
+.meal-title-row {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.meal-name {
+  font-size: 13px;
+  font-weight: 700;
+  color: var(--text-color);
+}
+
+.meal-badge {
+  font-size: 10px;
+  padding: 2px 6px;
+  border-radius: 10px;
+  background: rgba(255, 255, 255, 0.08);
+  color: var(--hint-color);
+}
+
+.meal-macros-row {
+  font-size: 11px;
+  color: var(--hint-color);
+}
+
+.meal-actions {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.meal-calories {
+  font-size: 13px;
+  font-weight: 700;
+  color: var(--primary-accent);
+}
+
+.btn-icon-delete {
+  background: rgba(239, 68, 68, 0.12);
+  color: #ef4444;
+  border: none;
+  width: 32px;
+  height: 32px;
+  border-radius: 8px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  cursor: pointer;
+  font-size: 14px;
+  transition: background 0.2s ease;
+}
+
+.btn-icon-delete:active {
+  background: rgba(239, 68, 68, 0.3);
+}
+
+/* ── Presets List ──────────────────────────────────────────────────────────── */
+.presets-list {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.preset-card {
+  background: var(--bg-color);
+  border: 1px solid var(--card-border);
+  border-radius: var(--radius-md);
+  padding: 12px;
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+}
+
+.preset-info h4 {
+  font-size: 14px;
+  font-weight: 700;
+  margin-bottom: 2px;
+}
+
+.preset-info p {
+  font-size: 11px;
+  color: var(--hint-color);
+}
+
+.preset-actions {
+  display: flex;
+  gap: 6px;
+}
+
+.btn-log-preset {
+  background: var(--primary-accent);
+  color: #ffffff;
+  border: none;
+  padding: 6px 12px;
+  border-radius: var(--radius-sm);
+  font-size: 12px;
+  font-weight: 600;
+  cursor: pointer;
+}
+
+.btn-delete-preset {
+  background: rgba(239, 68, 68, 0.12);
+  color: #ef4444;
+  border: none;
+  padding: 6px 10px;
+  border-radius: var(--radius-sm);
+  font-size: 12px;
+  cursor: pointer;
+}
+
+/* ── Settings & AI Coach ──────────────────────────────────────────────────── */
+.persona-options {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.persona-card {
+  background: var(--bg-color);
+  border: 1.5px solid var(--card-border);
+  border-radius: var(--radius-md);
+  padding: 12px 14px;
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  cursor: pointer;
+  transition: all 0.2s ease;
+}
+
+.persona-card.selected {
+  border-color: var(--primary-accent);
+  background: rgba(16, 185, 129, 0.08);
+}
+
+.persona-radio {
+  width: 18px;
+  height: 18px;
+  border-radius: 50%;
+  border: 2px solid var(--hint-color);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  flex-shrink: 0;
+}
+
+.persona-card.selected .persona-radio {
+  border-color: var(--primary-accent);
+  background: var(--primary-accent);
+}
+
+.persona-card.selected .persona-radio::after {
+  content: "";
+  width: 6px;
+  height: 6px;
+  background: #ffffff;
+  border-radius: 50%;
+}
+
+.persona-body h4 {
+  font-size: 14px;
+  font-weight: 700;
+  margin-bottom: 2px;
+}
+
+.persona-body p {
+  font-size: 11px;
+  color: var(--hint-color);
+  line-height: 1.3;
+}
+
+.target-form {
+  display: flex;
+  gap: 8px;
+}
+
+.target-form input {
+  flex: 1;
+  background: var(--bg-color);
+  border: 1px solid var(--card-border);
+  border-radius: var(--radius-sm);
+  padding: 10px 12px;
+  color: var(--text-color);
+  font-size: 14px;
+  font-weight: 600;
+  outline: none;
+}
+
+.target-form input:focus {
+  border-color: var(--primary-accent);
+}
+
+.btn-primary {
+  background: var(--button-color);
+  color: var(--button-text-color);
+  border: none;
+  padding: 10px 16px;
+  border-radius: var(--radius-sm);
+  font-weight: 700;
+  font-size: 13px;
+  cursor: pointer;
+}
+
+/* ── UI States, Toast & Spinners ───────────────────────────────────────────── */
+.empty-state {
+  text-align: center;
+  padding: 24px 12px;
+  color: var(--hint-color);
+  font-size: 12px;
+}
+
+.loading-overlay {
+  position: fixed;
+  top: 0; left: 0; right: 0; bottom: 0;
+  background: rgba(15, 23, 42, 0.85);
+  display: flex;
+  flex-direction: column;
+  justify-content: center;
+  align-items: center;
+  gap: 12px;
+  z-index: 100;
+  backdrop-filter: blur(4px);
+  transition: opacity 0.3s ease;
+}
+
+.loading-overlay.hidden {
+  opacity: 0;
+  pointer-events: none;
+}
+
+.spinner {
+  width: 36px;
+  height: 36px;
+  border: 3px solid rgba(255, 255, 255, 0.15);
+  border-top-color: var(--primary-accent);
+  border-radius: 50%;
+  animation: spin 0.8s linear infinite;
+}
+
+.toast {
+  position: fixed;
+  bottom: 20px;
+  left: 50%;
+  transform: translateX(-50%) translateY(100px);
+  background: rgba(16, 185, 129, 0.95);
+  color: #ffffff;
+  padding: 8px 18px;
+  border-radius: 20px;
+  font-size: 12px;
+  font-weight: 600;
+  box-shadow: 0 4px 12px rgba(0, 0, 0, 0.3);
+  transition: transform 0.3s cubic-bezier(0.175, 0.885, 0.32, 1.275);
+  z-index: 1000;
+  pointer-events: none;
+}
+
+.toast.show {
+  transform: translateX(-50%) translateY(0);
+}
+
+.toast.toast-error {
+  background: rgba(239, 68, 68, 0.95);
+}
+
+.error-banner {
+  background: rgba(239, 68, 68, 0.15);
+  border: 1px solid rgba(239, 68, 68, 0.3);
+  color: #ef4444;
+  padding: 10px 14px;
+  border-radius: var(--radius-sm);
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  font-size: 12px;
+}
+
+.btn-sm {
+  background: #ef4444;
+  color: #fff;
+  border: none;
+  padding: 4px 8px;
+  border-radius: 4px;
+  font-size: 11px;
+  cursor: pointer;
+}
+
+@keyframes spin {
+  to { transform: rotate(360deg); }
+}
+
+@keyframes fadeIn {
+  from { opacity: 0; transform: translateY(4px); }
+  to { opacity: 1; transform: translateY(0); }
+}

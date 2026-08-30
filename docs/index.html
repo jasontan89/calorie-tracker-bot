@@ -1,0 +1,209 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+  <title>Calorie Tracker Dashboard</title>
+  <link rel="stylesheet" href="style.css">
+  <!-- Telegram Web App SDK -->
+  <script src="https://telegram.org/js/telegram-web-app.js"></script>
+  <!-- Chart.js CDN -->
+  <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.1/dist/chart.umd.min.js"></script>
+</head>
+<body>
+  <div id="app" class="app-container">
+    <!-- Header Section -->
+    <header class="app-header">
+      <div class="user-info">
+        <div class="avatar" id="user-avatar">👤</div>
+        <div class="user-details">
+          <h2 id="user-name">Calorie Tracker</h2>
+          <span class="date-badge" id="current-date-badge">SGT Timezone</span>
+        </div>
+      </div>
+      <div class="header-badges">
+        <div class="badge streak-badge" id="streak-badge" title="Consistency Streak">
+          🔥 <span id="streak-count">0</span>
+        </div>
+        <div class="badge target-badge" id="target-badge" title="Daily Calorie Goal">
+          🎯 <span id="header-target">2000</span> kcal
+        </div>
+      </div>
+    </header>
+
+    <!-- Navigation Tabs -->
+    <nav class="nav-tabs">
+      <button class="nav-tab active" data-tab="tab-dashboard" id="btn-tab-dashboard">
+        <span class="tab-icon">📊</span>
+        <span class="tab-label">Dashboard</span>
+      </button>
+      <button class="nav-tab" data-tab="tab-presets" id="btn-tab-presets">
+        <span class="tab-icon">⭐</span>
+        <span class="tab-label">Presets</span>
+      </button>
+      <button class="nav-tab" data-tab="tab-settings" id="btn-tab-settings">
+        <span class="tab-icon">🤖</span>
+        <span class="tab-label">AI Coach</span>
+      </button>
+    </nav>
+
+    <!-- Loading State Overlay -->
+    <div id="loading-spinner" class="loading-overlay">
+      <div class="spinner"></div>
+      <p>Loading your nutrition data...</p>
+    </div>
+
+    <!-- Error Banner -->
+    <div id="error-banner" class="error-banner" style="display: none;">
+      <span id="error-text">⚠️ Connection error</span>
+      <button id="retry-btn" class="btn-sm">Retry</button>
+    </div>
+
+    <!-- TAB 1: DASHBOARD -->
+    <section id="tab-dashboard" class="tab-content active">
+      <!-- Today's Calorie & Macro Card -->
+      <div class="card summary-card">
+        <div class="card-header">
+          <h3>🔥 Today's Calories</h3>
+          <span class="badge" id="calorie-budget-badge">Budget Left</span>
+        </div>
+        
+        <div class="calorie-progress-container">
+          <div class="calorie-numbers">
+            <span class="current-calories" id="today-calories">0</span>
+            <span class="target-calories">/ <span id="today-target">2000</span> kcal</span>
+          </div>
+          <div class="progress-bar-bg">
+            <div class="progress-bar-fill" id="calorie-bar-fill" style="width: 0%;"></div>
+          </div>
+          <div class="calorie-subtext" id="calorie-remaining-text">2000 kcal remaining</div>
+        </div>
+
+        <div class="macros-grid">
+          <div class="macro-card protein-card">
+            <div class="macro-header">
+              <span class="macro-icon">🥩</span>
+              <span class="macro-title">Protein</span>
+            </div>
+            <div class="macro-value"><span id="macro-p-val">0</span> / <span id="macro-p-target">150</span>g</div>
+            <div class="macro-bar-bg"><div class="macro-bar-fill protein-fill" id="macro-p-fill" style="width: 0%;"></div></div>
+          </div>
+
+          <div class="macro-card carbs-card">
+            <div class="macro-header">
+              <span class="macro-icon">🍚</span>
+              <span class="macro-title">Carbs</span>
+            </div>
+            <div class="macro-value"><span id="macro-c-val">0</span> / <span id="macro-c-target">200</span>g</div>
+            <div class="macro-bar-bg"><div class="macro-bar-fill carbs-fill" id="macro-c-fill" style="width: 0%;"></div></div>
+          </div>
+
+          <div class="macro-card fat-card">
+            <div class="macro-header">
+              <span class="macro-icon">🥑</span>
+              <span class="macro-title">Fats</span>
+            </div>
+            <div class="macro-value"><span id="macro-f-val">0</span> / <span id="macro-f-target">67</span>g</div>
+            <div class="macro-bar-bg"><div class="macro-bar-fill fat-fill" id="macro-f-fill" style="width: 0%;"></div></div>
+          </div>
+        </div>
+      </div>
+
+      <!-- Interactive 7-Day Chart Card -->
+      <div class="card chart-card">
+        <div class="card-header">
+          <h3>📈 7-Day Trends (SGT)</h3>
+          <div class="chart-toggles">
+            <button class="toggle-btn active" id="btn-chart-cal">Calories</button>
+            <button class="toggle-btn" id="btn-chart-macros">Macros</button>
+          </div>
+        </div>
+        <p class="card-subtitle">Tap any day on the chart or buttons below to inspect meals.</p>
+        <div class="chart-container">
+          <canvas id="historyChart"></canvas>
+        </div>
+        <!-- 7-Day Date Filter Pills -->
+        <div class="date-pills-row" id="date-pills-container">
+          <!-- Populated dynamically via JS -->
+        </div>
+      </div>
+
+      <!-- Itemized Meal Log List Card -->
+      <div class="card meals-card">
+        <div class="card-header">
+          <h3 id="meals-card-title">🍽️ Today's Logged Meals</h3>
+          <span class="badge" id="meals-count-badge">0 meals</span>
+        </div>
+        <div id="meals-list" class="meals-list">
+          <!-- Meal items dynamically injected here -->
+        </div>
+      </div>
+    </section>
+
+    <!-- TAB 2: PRESETS & SUPPLEMENTS -->
+    <section id="tab-presets" class="tab-content">
+      <div class="card">
+        <div class="card-header">
+          <h3>⭐ Saved Presets & Supplements</h3>
+        </div>
+        <p class="card-subtitle">Tap <strong>➕ Log</strong> to instantly record to today's log, or <strong>🗑️</strong> to delete.</p>
+        <div id="presets-list" class="presets-list">
+          <!-- Presets dynamically injected here -->
+        </div>
+      </div>
+    </section>
+
+    <!-- TAB 3: SETTINGS & AI COACH -->
+    <section id="tab-settings" class="tab-content">
+      <div class="card">
+        <div class="card-header">
+          <h3>🤖 AI Nutrition Coach Style</h3>
+        </div>
+        <p class="card-subtitle">Choose how your AI coach interacts during daily check-ins and weekly Sunday debriefs.</p>
+        
+        <div class="persona-options">
+          <div class="persona-card" data-persona="sarcastic" id="persona-sarcastic">
+            <div class="persona-radio"></div>
+            <div class="persona-body">
+              <h4>🔥 Sarcastic & Witty</h4>
+              <p>Cheeky roasts, humorous banter, and funny reality checks on your snacks.</p>
+            </div>
+          </div>
+
+          <div class="persona-card" data-persona="supportive" id="persona-supportive">
+            <div class="persona-radio"></div>
+            <div class="persona-body">
+              <h4>💖 Supportive Cheerleader</h4>
+              <p>Empathetic motivation, gentle praise, positive reinforcement, and warm encouragement.</p>
+            </div>
+          </div>
+
+          <div class="persona-card" data-persona="sergeant" id="persona-sergeant">
+            <div class="persona-radio"></div>
+            <div class="persona-body">
+              <h4>🪖 Drill Sergeant</h4>
+              <p>Strict discipline, zero excuses, blunt accountability, and militant consistency.</p>
+            </div>
+          </div>
+        </div>
+      </div>
+
+      <div class="card">
+        <div class="card-header">
+          <h3>🎯 Daily Calorie Target</h3>
+        </div>
+        <p class="card-subtitle">Adjust your daily calorie goal.</p>
+        <div class="target-form">
+          <input type="number" id="input-daily-target" min="500" max="10000" step="50" placeholder="2000">
+          <button id="btn-save-target" class="btn-primary">Save Target</button>
+        </div>
+      </div>
+    </section>
+
+    <!-- Toast Notification Popup -->
+    <div id="toast" class="toast">Action completed</div>
+  </div>
+
+  <script src="app.js"></script>
+</body>
+</html>
