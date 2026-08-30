@@ -1583,8 +1583,8 @@ async function validateTelegramInitData(initData: string, botToken: string): Pro
 
     const authDate = parseInt(params.get("auth_date") || "0", 10);
     const now = Math.floor(Date.now() / 1000);
-    // Allow up to 48 hours for valid session token
-    if (authDate > 0 && now - authDate > 86400 * 2) {
+    // Allow up to 24 hours for valid session token
+    if (authDate > 0 && now - authDate > 86400) {
       return { valid: false };
     }
 
@@ -1609,7 +1609,7 @@ const cronSecret = Deno.env.get("CRON_SECRET");
 
 Deno.serve(async (req) => {
   const corsHeaders = {
-    "Access-Control-Allow-Origin": "*",
+    "Access-Control-Allow-Origin": "https://jasontan89.github.io",
     "Access-Control-Allow-Methods": "GET, POST, OPTIONS",
     "Access-Control-Allow-Headers": "Authorization, Content-Type, X-Telegram-Init-Data, Accept",
   };
