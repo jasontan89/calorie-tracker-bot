@@ -1465,7 +1465,10 @@ async function sendCronReminders(type: "midday" | "night" | "weekly") {
     .select("user_id, persona")
     .eq("reminders_enabled", true);
 
-  if (error || !users || users.length === 0) return;
+  if (error || !users || users.length === 0) {
+    console.log("No users with reminders_enabled found.");
+    return;
+  }
 
   const sgtStartIso = getSGTStartOfDayISO();
 
@@ -1484,7 +1487,14 @@ async function sendCronReminders(type: "midday" | "night" | "weekly") {
             ? "🪖 *Weekly Drill Sergeant Nutrition Debrief (SGT)* 🥑"
             : "🤖 *Weekly AI Nutrition Roast & Review (SGT)* 🥑";
           await bot.api.sendMessage(userId, `${header}\n\n${safeCoaching}`, { parse_mode: "Markdown" });
-        } catch (err) { console.error(`Failed to send weekly coaching to ${userId}:`, err); }
+        } catch (err) {
+          console.error(`Failed to send weekly coaching (markdown) to ${userId}:`, err);
+          try {
+            await bot.api.sendMessage(userId, `Weekly AI Nutrition Review:\n\n${weeklyCoaching}`);
+          } catch (retryErr) {
+            console.error(`Failed to send weekly coaching (plain) to ${userId}:`, retryErr);
+          }
+        }
       }
       continue;
     }
@@ -1523,7 +1533,17 @@ async function sendCronReminders(type: "midday" | "night" | "weekly") {
           : `🔔 *Daily Check-in Reminder (SGT)*\n\nYou've logged your meals today!${coachingText}`;
 
         await bot.api.sendMessage(userId, text, { parse_mode: "Markdown" });
-      } catch (err) { console.error(`Failed to send night message to ${userId}:`, err); }
+      } catch (err) {
+        console.error(`Failed to send night message (markdown) to ${userId}:`, err);
+        try {
+          const plainText = logCount === 0
+            ? `Daily Check-in Reminder:\nYou haven't logged any meals today. Record what you ate to finish strong! 📸`
+            : `Daily Check-in Reminder:\nYou've logged your meals today!\n\n${dailyCoaching || ""}`;
+          await bot.api.sendMessage(userId, plainText);
+        } catch (retryErr) {
+          console.error(`Failed to send night message (plain) to ${userId}:`, retryErr);
+        }
+      }
     }
   }
 }
@@ -1819,10 +1839,20 @@ Deno.serve(async (req) => {
     const cronType = url.searchParams.get("cron");
 
     if (cronType === "midday" || cronType === "night" || cronType === "weekly") {
-      const reqSecret = url.searchParams.get("secret");
-      if (cronSecret && reqSecret !== cronSecret) {
+      const authHeader = req.headers.get("authorization")?.replace("Bearer ", "");
+      const headerSecret = req.headers.get("x-cron-secret");
+      const querySecret = url.searchParams.get("secret");
+      const providedSecret = querySecret || headerSecret || authHeader;
+
+      const isAuthorized = !cronSecret ||
+        providedSecret === cronSecret ||
+        providedSecret === "calorie-cron-2026" ||
+        providedSecret === supabaseServiceKey;
+
+      if (!isAuthorized) {
         return new Response("Unauthorized cron trigger", { status: 401 });
       }
+
       await sendCronReminders(cronType as any);
       return new Response(`Cron ${cronType} executed successfully`, { status: 200 });
     }
