@@ -27,6 +27,16 @@ function escapeMarkdown(text: string): string {
   return text.replace(/([*_`\[\]])/g, "\\$1");
 }
 
+// Helper function to render text-based progress bars
+function renderProgressBar(current: number, target: number, length: number = 10): string {
+  if (!target || target <= 0) target = 1;
+  const pct = Math.round((current / target) * 100);
+  const filled = Math.min(Math.max(0, Math.round((current / target) * length)), length);
+  const empty = Math.max(0, length - filled);
+  const bar = "█".repeat(filled) + "░".repeat(empty);
+  return `[${bar}] ${pct}%`;
+}
+
 // Global flag to track command registration state
 let commandsRegistered = false;
 
@@ -35,9 +45,10 @@ async function registerBotCommandsOnce() {
   if (commandsRegistered) return;
   try {
     await bot.api.setMyCommands([
-      { command: "today", description: "📅 Today's Summary & Macros" },
+      { command: "today", description: "📅 Today's Summary & Progress" },
       { command: "presets", description: "⭐ Saved Presets & Supplements" },
-      { command: "history", description: "📊 7-Day Calorie Chart" },
+      { command: "history", description: "📊 7-Day Calorie History" },
+      { command: "persona", description: "🤖 Choose AI Coach Personality" },
       { command: "weight", description: "⚖️ Log Current Weight (kg)" },
       { command: "progress", description: "📈 30-Day Weight Chart" },
       { command: "leaderboard", description: "🏆 Group Calorie Leaderboard" },
@@ -70,7 +81,7 @@ function getSGTStartOfDayISO(date: Date = new Date()): string {
 async function ensureUserProfile(userId: number, firstName?: string, username?: string) {
   const { data, error } = await supabase
     .from("user_profiles")
-    .select("user_id, first_name, username")
+    .select("user_id, first_name, username, persona")
     .eq("user_id", userId)
     .maybeSingle();
 
@@ -87,6 +98,7 @@ async function ensureUserProfile(userId: number, firstName?: string, username?: 
         daily_target: 2000,
         reminders_enabled: false,
         streak_count: 0,
+        persona: "sarcastic",
         first_name: firstName || null,
         username: username || null
       });
@@ -160,7 +172,17 @@ function getMealType(): string {
   return "Snack";
 }
 
-async function renderPresetsMenu(ctx: any, userId: number) {
+function getPersonaDisplayName(persona?: string): string {
+  switch (persona) {
+    case "supportive": return "💖 Supportive Cheerleader";
+    case "sergeant": return "🪖 Drill Sergeant";
+    case "sarcastic":
+    default: return "🔥 Sarcastic & Witty Coach";
+  }
+}
+
+// ── Preset Manager View ───────────────────────────────────────────────────────
+async function renderPresetsMenu(ctx: any, userId: number, isEdit: boolean = false) {
   await ensureUserProfile(userId, ctx.from?.first_name, ctx.from?.username);
 
   const { data: presets, error } = await supabase
@@ -172,8 +194,8 @@ async function renderPresetsMenu(ctx: any, userId: number) {
   if (error || !presets || presets.length === 0) {
     const emptyMsg = 
       `⭐ *No Saved Presets Yet!*\n\n` +
-      `Log any meal, photo, or voice note, then tap *⭐ Save as Preset* on the log confirmation message to save quick items (like daily supplements or frequent meals).`;
-    if (ctx.callbackQuery) {
+      `Log any meal, photo, or voice note, then tap *⭐ Save as Preset* on the confirmation message to save quick items (like daily supplements, snacks, or frequent meals).`;
+    if (isEdit && ctx.callbackQuery) {
       await ctx.editMessageText(emptyMsg, { parse_mode: "Markdown" });
     } else {
       await ctx.reply(emptyMsg, { parse_mode: "Markdown" });
@@ -187,16 +209,163 @@ async function renderPresetsMenu(ctx: any, userId: number) {
   presets.forEach((preset) => {
     const safeName = escapeMarkdown(preset.food_name);
     text += `• *${safeName}* — ${preset.calories} kcal (P:${preset.protein}g C:${preset.carbs}g F:${preset.fat}g)\n`;
-    keyboard.text(`➕ Log ${preset.food_name.substring(0, 15)}`, `log_preset:${preset.id}`)
+    const shortName = preset.food_name.length > 14 ? preset.food_name.substring(0, 12) + "…" : preset.food_name;
+    keyboard.text(`➕ ${shortName}`, `log_preset:${preset.id}`)
             .text(`🗑️ Delete`, `del_preset:${preset.id}`)
             .row();
   });
 
-  text += `\n_Tap "➕ Log" to immediately add an item to today's intake!_`;
-  if (ctx.callbackQuery) {
-    await ctx.reply(text, { parse_mode: "Markdown", reply_markup: keyboard });
+  text += `\n_Tap "➕" to immediately log to today, or "🗑️ Delete" to remove._`;
+
+  if (isEdit && ctx.callbackQuery) {
+    await ctx.editMessageText(text, { parse_mode: "Markdown", reply_markup: keyboard });
   } else {
     await ctx.reply(text, { parse_mode: "Markdown", reply_markup: keyboard });
+  }
+}
+
+// ── Delete Menu View ──────────────────────────────────────────────────────────
+async function renderDeleteMenu(ctx: any, userId: number) {
+  await ensureUserProfile(userId, ctx.from?.first_name, ctx.from?.username);
+  const sgtStartIso = getSGTStartOfDayISO();
+
+  const { data: logs, error } = await supabase
+    .from("food_logs")
+    .select("id, food_name, calories, created_at")
+    .eq("user_id", userId)
+    .gte("created_at", sgtStartIso)
+    .order("created_at", { ascending: false });
+
+  if (error) {
+    console.error("Error fetching today's logs for deletion:", error);
+    return ctx.reply("Failed to load today's food logs.");
+  }
+
+  if (!logs || logs.length === 0) {
+    return ctx.reply("_No food logged today to delete._", { parse_mode: "Markdown" });
+  }
+
+  let text = `🗑️ *Select a meal to delete from today:*\n\n`;
+  const keyboard = new InlineKeyboard();
+
+  logs.forEach((log) => {
+    const safeFood = escapeMarkdown(log.food_name);
+    text += `• *${safeFood}* — ${log.calories} kcal\n`;
+    const btnLabel = `❌ ${log.food_name.length > 20 ? log.food_name.substring(0, 18) + "…" : log.food_name} (${log.calories} kcal)`;
+    keyboard.text(btnLabel, `delfood:${log.id}`).row();
+  });
+
+  keyboard.text("🚫 Cancel", "cancel_delete");
+
+  await ctx.reply(text, { parse_mode: "Markdown", reply_markup: keyboard });
+}
+
+// ── 7-Day History View ────────────────────────────────────────────────────────
+async function renderHistoryView(ctx: any, userId: number) {
+  await ensureUserProfile(userId, ctx.from?.first_name, ctx.from?.username);
+
+  const sevenDaysAgoDate = new Date(new Date().getTime() - 6 * 24 * 60 * 60 * 1000);
+  const sevenDaysAgoIso = getSGTStartOfDayISO(sevenDaysAgoDate);
+
+  const { data: logs, error } = await supabase
+    .from("food_logs")
+    .select("calories, created_at")
+    .eq("user_id", userId)
+    .gte("created_at", sevenDaysAgoIso)
+    .order("created_at", { ascending: true });
+
+  if (error) {
+    console.error("Error fetching history:", error);
+    return ctx.reply("Failed to fetch history.");
+  }
+
+  const { data: profile } = await supabase
+    .from("user_profiles")
+    .select("daily_target")
+    .eq("user_id", userId)
+    .maybeSingle();
+
+  const target = profile?.daily_target ?? 2000;
+
+  const historyMap: Record<string, number> = {};
+  const past7Days: string[] = [];
+  for (let i = 6; i >= 0; i--) {
+    const d = new Date(new Date().getTime() - i * 24 * 60 * 60 * 1000);
+    const dateStr = getSGTDateStr(d);
+    historyMap[dateStr] = 0;
+    past7Days.push(dateStr);
+  }
+
+  (logs ?? []).forEach((log) => {
+    const dateStr = getSGTDateStr(new Date(log.created_at));
+    if (dateStr in historyMap) {
+      historyMap[dateStr] += log.calories;
+    }
+  });
+
+  const sortedDates = past7Days;
+  const calorieValues = sortedDates.map(date => historyMap[date]);
+
+  let textReport = `📊 *7-Day Calorie History (SGT)*\n\n`;
+  sortedDates.forEach((dateStr) => {
+    const total = historyMap[dateStr];
+    const isOver = total > target;
+    const isToday = dateStr === getSGTDateStr();
+    textReport += `• *${dateStr}*${isToday ? " (Today)" : ""}: ${total} / ${target} kcal ${total === 0 ? "⚪" : isOver ? "⚠️" : "✅"}\n`;
+  });
+
+  textReport += `\n_Tap a date below to inspect individual meals:_`;
+
+  const keyboard = new InlineKeyboard();
+  // Row 1: 4 older days
+  for (let i = 0; i < 4; i++) {
+    const dStr = sortedDates[i];
+    const label = dStr.substring(5); // MM-DD
+    keyboard.text(label, `history_day:${dStr}`);
+  }
+  keyboard.row();
+  // Row 2: 3 recent days
+  for (let i = 4; i < 7; i++) {
+    const dStr = sortedDates[i];
+    const label = i === 6 ? "Today" : dStr.substring(5);
+    keyboard.text(label, `history_day:${dStr}`);
+  }
+
+  try {
+    const chartConfig = {
+      type: 'bar',
+      data: {
+        labels: sortedDates.map(d => d.substring(5)),
+        datasets: [
+          {
+            type: 'bar',
+            label: 'Calories (kcal)',
+            data: calorieValues,
+            backgroundColor: 'rgba(16, 185, 129, 0.75)',
+            borderColor: '#10B981',
+            borderWidth: 1
+          },
+          {
+            type: 'line',
+            label: 'Goal Target',
+            data: Array(7).fill(target),
+            borderColor: '#EF4444',
+            borderDash: [5, 5],
+            fill: false,
+            pointRadius: 0
+          }
+        ]
+      },
+      options: {
+        title: { display: true, text: 'Calorie History (SGT - Last 7 Days)' }
+      }
+    };
+
+    const chartUrl = `https://quickchart.io/chart?c=${encodeURIComponent(JSON.stringify(chartConfig))}`;
+    await ctx.replyWithPhoto(chartUrl, { caption: textReport, parse_mode: "Markdown", reply_markup: keyboard });
+  } catch (chartErr) {
+    console.error("Failed to generate/send calorie chart:", chartErr);
+    await ctx.reply(textReport, { parse_mode: "Markdown", reply_markup: keyboard });
   }
 }
 
@@ -209,23 +378,26 @@ bot.command("start", async (ctx) => {
   await ensureUserProfile(userId, ctx.from?.first_name, ctx.from?.username);
   const name = escapeMarkdown(ctx.from?.first_name ?? "there");
 
-  const keyboard = new InlineKeyboard().text("⭐ View Saved Presets", "open_presets");
+  const keyboard = new InlineKeyboard()
+    .text("⭐ View Saved Presets", "open_presets")
+    .text("🤖 AI Coach Style", "open_persona");
 
   await ctx.reply(
-    `Welcome to Calorie Tracker Bot v3.2, ${name}! 🍎\n\n` +
-    `I can track calories, macronutrients, weight, voice notes & saved presets!\n\n` +
+    `Welcome to Calorie Tracker Bot v3.3, ${name}! 🍎\n\n` +
+    `I can track calories, macronutrients, weight, voice notes & multi-item meals!\n\n` +
     `👉 *How to use:*\n` +
     `• 📸 *Send a photo* of your food to auto-estimate calories & macros!\n` +
     `• 🎙️ *Send a voice note* (e.g. "I had two eggs and toast") to auto-log!\n` +
     `• ✍️ *Just type what you ate* in chat.\n` +
-    `• ⭐ Use /presets to view & 1-tap log saved supplements or meals.\n` +
-    `• 📅 Use /today to view calories & macro balances.\n` +
+    `• 📅 Use /today to view calories & macro progress bars.\n` +
+    `• ⭐ Use /presets to view, log & manage saved items.\n` +
+    `• 📊 Use /history for your 7-day chart & day inspection.\n` +
+    `• 🤖 Use /persona to switch between Sarcastic, Supportive, or Drill Sergeant coach!\n` +
     `• 🎯 Use /target <number> to update your daily goal.\n` +
-    `• 📊 Use /history for your 7-day calorie chart.\n` +
     `• 🏆 Use /joinleaderboard & /leaderboard in group chats!\n` +
     `• ⚖️ Use /weight <number> & /progress for weight tracking.\n` +
     `• 🗑️ Use /delete to select & delete any logged food today.\n` +
-    `• 🔔 Use /reminders for opt-in AI coaching & reminders.`,
+    `• 🔔 Use /reminders for opt-in daily check-ins & weekly reviews.`,
     { parse_mode: "Markdown", reply_markup: keyboard }
   );
 });
@@ -272,7 +444,6 @@ bot.command("today", async (ctx) => {
 
   const target = profile?.daily_target ?? 2000;
   const macroTargets = getMacroTargets(target, profile);
-
   const sgtStartIso = getSGTStartOfDayISO();
 
   const { data: logs, error } = await supabase
@@ -297,32 +468,40 @@ bot.command("today", async (ctx) => {
 
   let message = `📅 *Today's Food Log (${sgtTodayStr} SGT)*\n\n`;
   if (!logs || logs.length === 0) {
-    message += `_No food logged today._\n\n`;
+    message += `_No food logged today yet._\n\n`;
   } else {
     logs.forEach((log) => {
       const safeFood = escapeMarkdown(log.food_name);
       const safeMealType = escapeMarkdown(log.meal_type || "Meal");
-      message += `• ${log.calories} kcal - _${safeFood}_ (${safeMealType}) (P:${log.protein}g C:${log.carbs}g F:${log.fat}g)\n`;
+      message += `• ${log.calories} kcal — *${safeFood}* _(${safeMealType})_\n   _P:${log.protein}g | C:${log.carbs}g | F:${log.fat}g_\n`;
     });
     message += `\n`;
   }
 
   message += `━━━━━━━━━━━━━━━━━━━━\n`;
-  message += `Total Consumed: *${totalCalories} kcal*\n`;
-  message += `Daily Goal: *${target} kcal*\n`;
-
+  const calBar = renderProgressBar(totalCalories, target, 10);
+  message += `🔥 *Calories: ${totalCalories} / ${target} kcal*\n`;
+  message += `   ${calBar}\n`;
   if (remaining >= 0) {
-    message += `Remaining Budget: *${remaining} kcal* 🍏\n\n`;
+    message += `   Budget Left: *${remaining} kcal* 🍏\n\n`;
   } else {
-    message += `Remaining Budget: *${remaining} kcal* ⚠️ (Over goal)\n\n`;
+    message += `   Budget: *${Math.abs(remaining)} kcal OVER* ⚠️\n\n`;
   }
 
-  message += `🥦 *Macronutrients Summary:*\n`;
-  message += `• Protein: *${totalProtein}g* / ${macroTargets.protein}g\n`;
-  message += `• Carbs: *${totalCarbs}g* / ${macroTargets.carbs}g\n`;
-  message += `• Fat: *${totalFat}g* / ${macroTargets.fat}g`;
+  const pBar = renderProgressBar(totalProtein, macroTargets.protein, 10);
+  const cBar = renderProgressBar(totalCarbs, macroTargets.carbs, 10);
+  const fBar = renderProgressBar(totalFat, macroTargets.fat, 10);
 
-  const keyboard = new InlineKeyboard().text("⭐ Quick Log Presets", "open_presets");
+  message += `🥦 *Macronutrients Breakdown:*\n`;
+  message += `• 🥩 *Protein:* ${totalProtein} / ${macroTargets.protein}g\n   ${pBar}\n`;
+  message += `• 🍚 *Carbs:* ${totalCarbs} / ${macroTargets.carbs}g\n   ${cBar}\n`;
+  message += `• 🥑 *Fat:* ${totalFat} / ${macroTargets.fat}g\n   ${fBar}`;
+
+  const keyboard = new InlineKeyboard()
+    .text("⭐ Presets", "open_presets")
+    .text("🗑️ Delete Meal", "open_delete")
+    .row()
+    .text("📊 7-Day History", "open_history");
 
   await ctx.reply(message, { parse_mode: "Markdown", reply_markup: keyboard });
 });
@@ -330,92 +509,31 @@ bot.command("today", async (ctx) => {
 bot.command("history", async (ctx) => {
   const userId = ctx.from?.id;
   if (!userId) return;
+  await renderHistoryView(ctx, userId);
+});
 
+bot.command("persona", async (ctx) => {
+  const userId = ctx.from?.id;
+  if (!userId) return;
   await ensureUserProfile(userId, ctx.from?.first_name, ctx.from?.username);
 
-  const sevenDaysAgoDate = new Date(new Date().getTime() - 6 * 24 * 60 * 60 * 1000);
-  const sevenDaysAgoIso = getSGTStartOfDayISO(sevenDaysAgoDate);
+  const { data: profile } = await supabase.from("user_profiles").select("persona").eq("user_id", userId).maybeSingle();
+  const currentPersona = profile?.persona || "sarcastic";
 
-  const { data: logs, error } = await supabase
-    .from("food_logs")
-    .select("calories, created_at")
-    .eq("user_id", userId)
-    .gte("created_at", sevenDaysAgoIso)
-    .order("created_at", { ascending: true });
+  const keyboard = new InlineKeyboard()
+    .text(currentPersona === "sarcastic" ? "🔥 Sarcastic (Active)" : "🔥 Sarcastic", "set_persona:sarcastic").row()
+    .text(currentPersona === "supportive" ? "💖 Supportive (Active)" : "💖 Supportive", "set_persona:supportive").row()
+    .text(currentPersona === "sergeant" ? "🪖 Drill Sergeant (Active)" : "🪖 Drill Sergeant", "set_persona:sergeant");
 
-  if (error) {
-    console.error("Error fetching history:", error);
-    return ctx.reply("Failed to fetch history.");
-  }
-
-  const { data: profile } = await supabase
-    .from("user_profiles")
-    .select("daily_target")
-    .eq("user_id", userId)
-    .maybeSingle();
-
-  const target = profile?.daily_target ?? 2000;
-
-  const historyMap: Record<string, number> = {};
-  for (let i = 0; i < 7; i++) {
-    const d = new Date(new Date().getTime() - i * 24 * 60 * 60 * 1000);
-    const dateStr = getSGTDateStr(d);
-    historyMap[dateStr] = 0;
-  }
-
-  (logs ?? []).forEach((log) => {
-    const dateStr = getSGTDateStr(new Date(log.created_at));
-    if (dateStr in historyMap) {
-      historyMap[dateStr] += log.calories;
-    }
-  });
-
-  const sortedDates = Object.keys(historyMap).sort();
-  const calorieValues = sortedDates.map(date => historyMap[date]);
-
-  let textReport = `📊 *Weekly Calorie History (SGT)*\n\n`;
-  sortedDates.forEach((dateStr) => {
-    const total = historyMap[dateStr];
-    const isOver = total > target;
-    textReport += `• *${dateStr}*: ${total} / ${target} kcal ${isOver ? "⚠️" : "✅"}\n`;
-  });
-
-  try {
-    const chartConfig = {
-      type: 'bar',
-      data: {
-        labels: sortedDates.map(d => d.substring(5)),
-        datasets: [
-          {
-            type: 'bar',
-            label: 'Calories (kcal)',
-            data: calorieValues,
-            backgroundColor: 'rgba(16, 185, 129, 0.75)',
-            borderColor: '#10B981',
-            borderWidth: 1
-          },
-          {
-            type: 'line',
-            label: 'Goal Target',
-            data: Array(7).fill(target),
-            borderColor: '#EF4444',
-            borderDash: [5, 5],
-            fill: false,
-            pointRadius: 0
-          }
-        ]
-      },
-      options: {
-        title: { display: true, text: 'Calorie History (SGT - Last 7 Days)' }
-      }
-    };
-
-    const chartUrl = `https://quickchart.io/chart?c=${encodeURIComponent(JSON.stringify(chartConfig))}`;
-    await ctx.replyWithPhoto(chartUrl, { caption: textReport, parse_mode: "Markdown" });
-  } catch (chartErr) {
-    console.error("Failed to generate/send calorie chart:", chartErr);
-    await ctx.reply(textReport, { parse_mode: "Markdown" });
-  }
+  await ctx.reply(
+    `🤖 *AI Coach Personality Settings*\n\n` +
+    `Current Persona: *${getPersonaDisplayName(currentPersona)}*\n\n` +
+    `Choose how you want your AI coach to interact with you during daily check-ins and weekly reviews:\n\n` +
+    `• 🔥 *Sarcastic*: Witty roasts and cheeky banter about your food.\n` +
+    `• 💖 *Supportive*: Warm cheerleader, gentle praise, uplifting vibes.\n` +
+    `• 🪖 *Drill Sergeant*: Strict discipline, zero excuses, maximum accountability.`,
+    { parse_mode: "Markdown", reply_markup: keyboard }
+  );
 });
 
 bot.command("presets", async (ctx) => {
@@ -427,39 +545,7 @@ bot.command("presets", async (ctx) => {
 bot.command("delete", async (ctx) => {
   const userId = ctx.from?.id;
   if (!userId) return;
-
-  await ensureUserProfile(userId, ctx.from?.first_name, ctx.from?.username);
-  const sgtStartIso = getSGTStartOfDayISO();
-
-  const { data: logs, error } = await supabase
-    .from("food_logs")
-    .select("id, food_name, calories, created_at")
-    .eq("user_id", userId)
-    .gte("created_at", sgtStartIso)
-    .order("created_at", { ascending: false });
-
-  if (error) {
-    console.error("Error fetching today's logs for deletion:", error);
-    return ctx.reply("Failed to load today's food logs.");
-  }
-
-  if (!logs || logs.length === 0) {
-    return ctx.reply("_No food logged today to delete._", { parse_mode: "Markdown" });
-  }
-
-  let text = `🗑️ *Select a meal to delete from today:*\n\n`;
-  const keyboard = new InlineKeyboard();
-
-  logs.forEach((log) => {
-    const safeFood = escapeMarkdown(log.food_name);
-    text += `• *${safeFood}* — ${log.calories} kcal\n`;
-    const btnLabel = `❌ ${log.food_name.length > 20 ? log.food_name.substring(0, 18) + "…" : log.food_name} (${log.calories} kcal)`;
-    keyboard.text(btnLabel, `delfood:${log.id}`).row();
-  });
-
-  keyboard.text("🚫 Cancel", "cancel_delete");
-
-  await ctx.reply(text, { parse_mode: "Markdown", reply_markup: keyboard });
+  await renderDeleteMenu(ctx, userId);
 });
 
 bot.command("weight", async (ctx) => {
@@ -539,13 +625,15 @@ bot.command("reminders", async (ctx) => {
   if (!userId) return;
 
   await ensureUserProfile(userId, ctx.from?.first_name, ctx.from?.username);
-  const { data: profile } = await supabase.from("user_profiles").select("reminders_enabled").eq("user_id", userId).maybeSingle();
+  const { data: profile } = await supabase.from("user_profiles").select("reminders_enabled, persona").eq("user_id", userId).maybeSingle();
   const newStatus = !(profile?.reminders_enabled ?? false);
 
   await supabase.from("user_profiles").update({ reminders_enabled: newStatus }).eq("user_id", userId);
 
+  const personaName = getPersonaDisplayName(profile?.persona);
+
   if (newStatus) {
-    await ctx.reply(`🔔 *Reminders & Sarcastic AI Coaching Enabled!*\n\nYou'll get daily check-ins & weekly AI reviews in SGT.`, { parse_mode: "Markdown" });
+    await ctx.reply(`🔔 *Reminders & AI Coaching Enabled!*\n\nActive Coach Style: *${personaName}*\nYou'll get daily check-ins & weekly AI reviews in SGT.`, { parse_mode: "Markdown" });
   } else {
     await ctx.reply(`🔕 *Reminders Disabled.*`, { parse_mode: "Markdown" });
   }
@@ -662,7 +750,7 @@ bot.command("leaderboard", async (ctx) => {
   await ctx.reply(message, { parse_mode: "Markdown" });
 });
 
-// ── Core AI Processing Helper (Photos & Voice Notes) ─────────────────────────
+// ── Core AI Processing Helper (Photos, Voice & Text) ─────────────────────────
 
 async function processFoodWithGemini(
   ctx: any,
@@ -746,7 +834,8 @@ async function processFoodWithGemini(
         protein: totalP,
         carbs: totalC,
         fat: totalF,
-        meal_type: mealType
+        meal_type: mealType,
+        items: items
       })
       .select()
       .single();
@@ -861,6 +950,110 @@ bot.callbackQuery("open_presets", async (ctx) => {
   await renderPresetsMenu(ctx, userId);
 });
 
+bot.callbackQuery("open_delete", async (ctx) => {
+  const userId = ctx.from?.id;
+  if (!userId) return;
+  await ctx.answerCallbackQuery();
+  await renderDeleteMenu(ctx, userId);
+});
+
+bot.callbackQuery("open_history", async (ctx) => {
+  const userId = ctx.from?.id;
+  if (!userId) return;
+  await ctx.answerCallbackQuery();
+  await renderHistoryView(ctx, userId);
+});
+
+bot.callbackQuery("open_persona", async (ctx) => {
+  const userId = ctx.from?.id;
+  if (!userId) return;
+  await ctx.answerCallbackQuery();
+
+  const { data: profile } = await supabase.from("user_profiles").select("persona").eq("user_id", userId).maybeSingle();
+  const currentPersona = profile?.persona || "sarcastic";
+
+  const keyboard = new InlineKeyboard()
+    .text(currentPersona === "sarcastic" ? "🔥 Sarcastic (Active)" : "🔥 Sarcastic", "set_persona:sarcastic").row()
+    .text(currentPersona === "supportive" ? "💖 Supportive (Active)" : "💖 Supportive", "set_persona:supportive").row()
+    .text(currentPersona === "sergeant" ? "🪖 Drill Sergeant (Active)" : "🪖 Drill Sergeant", "set_persona:sergeant");
+
+  await ctx.reply(
+    `🤖 *AI Coach Personality Settings*\n\n` +
+    `Current Persona: *${getPersonaDisplayName(currentPersona)}*\n\n` +
+    `Choose your AI coach style:\n\n` +
+    `• 🔥 *Sarcastic*: Witty roasts and cheeky humor.\n` +
+    `• 💖 *Supportive*: Warm praise and cheerleader vibes.\n` +
+    `• 🪖 *Drill Sergeant*: Strict discipline, no excuses.`,
+    { parse_mode: "Markdown", reply_markup: keyboard }
+  );
+});
+
+bot.callbackQuery(/^set_persona:(.+)$/, async (ctx) => {
+  const personaType = ctx.match[1];
+  const userId = ctx.from?.id;
+  if (!userId) return;
+  await ctx.answerCallbackQuery({ text: `Set to ${getPersonaDisplayName(personaType)}` });
+
+  await supabase.from("user_profiles").update({ persona: personaType }).eq("user_id", userId);
+
+  const keyboard = new InlineKeyboard()
+    .text(personaType === "sarcastic" ? "🔥 Sarcastic (Active)" : "🔥 Sarcastic", "set_persona:sarcastic").row()
+    .text(personaType === "supportive" ? "💖 Supportive (Active)" : "💖 Supportive", "set_persona:supportive").row()
+    .text(personaType === "sergeant" ? "🪖 Drill Sergeant (Active)" : "🪖 Drill Sergeant", "set_persona:sergeant");
+
+  await ctx.editMessageText(
+    `✅ AI Coach style set to *${getPersonaDisplayName(personaType)}*!\n\n` +
+    `Your daily check-ins and weekly reviews will now reflect this personality.`,
+    { parse_mode: "Markdown", reply_markup: keyboard }
+  );
+});
+
+bot.callbackQuery(/^history_day:(.+)$/, async (ctx) => {
+  const dateStr = ctx.match[1]; // YYYY-MM-DD
+  const userId = ctx.from?.id;
+  if (!userId) return;
+  await ctx.answerCallbackQuery();
+
+  const startIso = new Date(`${dateStr}T00:00:00+08:00`).toISOString();
+  const endIso = new Date(`${dateStr}T23:59:59.999+08:00`).toISOString();
+
+  const { data: logs, error } = await supabase
+    .from("food_logs")
+    .select("food_name, calories, protein, carbs, fat, meal_type, created_at")
+    .eq("user_id", userId)
+    .gte("created_at", startIso)
+    .lte("created_at", endIso)
+    .order("created_at", { ascending: true });
+
+  if (error) {
+    return ctx.reply("Failed to load food logs for that date.");
+  }
+
+  const totalCalories = (logs ?? []).reduce((sum, item) => sum + item.calories, 0);
+  const totalProtein = (logs ?? []).reduce((sum, item) => sum + (item.protein || 0), 0);
+  const totalCarbs = (logs ?? []).reduce((sum, item) => sum + (item.carbs || 0), 0);
+  const totalFat = (logs ?? []).reduce((sum, item) => sum + (item.fat || 0), 0);
+
+  let msg = `📅 *Food Log for ${dateStr} (SGT)*\n\n`;
+  if (!logs || logs.length === 0) {
+    msg += `_No meals logged on this date._\n\n`;
+  } else {
+    logs.forEach((log) => {
+      const safeFood = escapeMarkdown(log.food_name);
+      const safeMeal = escapeMarkdown(log.meal_type || "Meal");
+      msg += `• *${safeFood}* (${safeMeal}) — ${log.calories} kcal\n   _P:${log.protein}g | C:${log.carbs}g | F:${log.fat}g_\n`;
+    });
+    msg += `\n`;
+  }
+
+  msg += `━━━━━━━━━━━━━━━━━━━━\n`;
+  msg += `🔥 Total Calories: *${totalCalories} kcal*\n`;
+  msg += `🥦 Macros: P:${totalProtein}g | C:${totalCarbs}g | F:${totalFat}g\n`;
+
+  const keyboard = new InlineKeyboard().text("⬅️ Back to 7-Day Chart", "open_history");
+  await ctx.reply(msg, { parse_mode: "Markdown", reply_markup: keyboard });
+});
+
 bot.callbackQuery(/^confirm:(.+)$/, async (ctx) => {
   const pendingId = ctx.match[1];
   await ctx.answerCallbackQuery();
@@ -875,17 +1068,27 @@ bot.callbackQuery(/^confirm:(.+)$/, async (ctx) => {
     return ctx.editMessageText("⚠️ This food log has expired or was already handled.");
   }
 
-  const { data: insertedLog, error: insertErr } = await supabase.from("food_logs").insert({
-    user_id: pending.user_id,
-    food_name: pending.food_name,
-    calories: pending.calories,
-    protein: pending.protein || 0,
-    carbs: pending.carbs || 0,
-    fat: pending.fat || 0,
-    meal_type: pending.meal_type || getMealType()
-  }).select().single();
+  const items: any[] = pending.items && Array.isArray(pending.items) && pending.items.length > 0
+    ? pending.items
+    : [{ food: pending.food_name, calories: pending.calories, protein: pending.protein, carbs: pending.carbs, fat: pending.fat }];
 
-  if (insertErr || !insertedLog) {
+  const mealType = pending.meal_type || getMealType();
+  const rowsToInsert = items.map((item) => ({
+    user_id: pending.user_id,
+    food_name: item.food || "Item",
+    calories: Number(item.calories) || 0,
+    protein: Number(item.protein) || 0,
+    carbs: Number(item.carbs) || 0,
+    fat: Number(item.fat) || 0,
+    meal_type: mealType
+  }));
+
+  const { data: insertedLogs, error: insertErr } = await supabase
+    .from("food_logs")
+    .insert(rowsToInsert)
+    .select();
+
+  if (insertErr || !insertedLogs || insertedLogs.length === 0) {
     console.error("Error logging meal:", insertErr);
     return ctx.editMessageText("⚠️ Failed to save food log.");
   }
@@ -893,15 +1096,29 @@ bot.callbackQuery(/^confirm:(.+)$/, async (ctx) => {
   await supabase.from("pending_food_logs").delete().eq("id", pendingId);
   const streakMessage = await updateStreakAndGetMessage(pending.user_id);
 
-  const saveKeyboard = new InlineKeyboard().text("⭐ Save as Preset", `save_preset:${insertedLog.id}`);
-  const safeFood = escapeMarkdown(pending.food_name);
+  const saveKeyboard = new InlineKeyboard();
+  let confirmationText = "";
 
-  await ctx.editMessageText(
-    `Logged: *${safeFood}* (${pending.calories} kcal) ✅\n` +
-    `Macros: P:${pending.protein}g | C:${pending.carbs}g | F:${pending.fat}g` +
-    streakMessage,
-    { parse_mode: "Markdown", reply_markup: saveKeyboard }
-  );
+  if (insertedLogs.length === 1) {
+    const log = insertedLogs[0];
+    const safeFood = escapeMarkdown(log.food_name);
+    saveKeyboard.text("⭐ Save as Preset", `save_preset:${log.id}`);
+    confirmationText = 
+      `Logged: *${safeFood}* (${log.calories} kcal) ✅\n` +
+      `Macros: P:${log.protein}g | C:${log.carbs}g | F:${log.fat}g`;
+  } else {
+    confirmationText = `Logged *${insertedLogs.length} items* (Total: ${pending.calories} kcal) ✅\n\n`;
+    insertedLogs.forEach((log) => {
+      const safeFood = escapeMarkdown(log.food_name);
+      confirmationText += `• *${safeFood}* — ${log.calories} kcal (P:${log.protein}g C:${log.carbs}g F:${log.fat}g)\n`;
+      const shortName = log.food_name.length > 16 ? log.food_name.substring(0, 14) + "…" : log.food_name;
+      saveKeyboard.text(`⭐ Save "${shortName}"`, `save_preset:${log.id}`).row();
+    });
+  }
+
+  confirmationText += streakMessage;
+
+  await ctx.editMessageText(confirmationText, { parse_mode: "Markdown", reply_markup: saveKeyboard });
 });
 
 bot.callbackQuery(/^save_preset:(.+)$/, async (ctx) => {
@@ -978,18 +1195,12 @@ bot.callbackQuery(/^log_preset:(.+)$/, async (ctx) => {
 
 bot.callbackQuery(/^del_preset:(.+)$/, async (ctx) => {
   const presetId = ctx.match[1];
-  await ctx.answerCallbackQuery();
+  const userId = ctx.from?.id;
+  if (!userId) return;
+  await ctx.answerCallbackQuery({ text: "Preset removed!" });
 
-  const { data: preset } = await supabase
-    .from("user_presets")
-    .select("food_name")
-    .eq("id", presetId)
-    .maybeSingle();
-
-  await supabase.from("user_presets").delete().eq("id", presetId);
-
-  const safeFood = escapeMarkdown(preset?.food_name || "Item");
-  await ctx.reply(`🗑️ Deleted preset: *${safeFood}*`, { parse_mode: "Markdown" });
+  await supabase.from("user_presets").delete().eq("id", presetId).eq("user_id", userId);
+  await renderPresetsMenu(ctx, userId, true);
 });
 
 bot.callbackQuery(/^cancel:(.+)$/, async (ctx) => {
@@ -1089,36 +1300,57 @@ bot.on("message:text", async (ctx) => {
     }
 
     const scaleRatio = pending.calories > 0 ? (newCalories / pending.calories) : 1;
-    const scaledProtein = Math.round((pending.protein || 0) * scaleRatio);
-    const scaledCarbs = Math.round((pending.carbs || 0) * scaleRatio);
-    const scaledFat = Math.round((pending.fat || 0) * scaleRatio);
+    const mealType = pending.meal_type || getMealType();
+    
+    const items: any[] = pending.items && Array.isArray(pending.items) && pending.items.length > 0
+      ? pending.items
+      : [{ food: pending.food_name, calories: pending.calories, protein: pending.protein, carbs: pending.carbs, fat: pending.fat }];
 
-    const { data: insertedLog, error: insertErr } = await supabase.from("food_logs").insert({
+    const rowsToInsert = items.map((item) => ({
       user_id: userId,
-      food_name: pending.food_name,
-      calories: newCalories,
-      protein: scaledProtein,
-      carbs: scaledCarbs,
-      fat: scaledFat,
-      meal_type: pending.meal_type || getMealType()
-    }).select().single();
+      food_name: item.food || "Item",
+      calories: Math.round((Number(item.calories) || 0) * scaleRatio),
+      protein: Math.round((Number(item.protein) || 0) * scaleRatio),
+      carbs: Math.round((Number(item.carbs) || 0) * scaleRatio),
+      fat: Math.round((Number(item.fat) || 0) * scaleRatio),
+      meal_type: mealType
+    }));
 
-    if (insertErr || !insertedLog) {
+    const { data: insertedLogs, error: insertErr } = await supabase
+      .from("food_logs")
+      .insert(rowsToInsert)
+      .select();
+
+    if (insertErr || !insertedLogs || insertedLogs.length === 0) {
       return ctx.reply("⚠️ Failed to save custom calories log.");
     }
 
     await supabase.from("pending_food_logs").delete().eq("id", activeEditingId);
     const streakMessage = await updateStreakAndGetMessage(userId);
 
-    const saveKeyboard = new InlineKeyboard().text("⭐ Save as Preset", `save_preset:${insertedLog.id}`);
-    const safeFood = escapeMarkdown(pending.food_name);
+    const saveKeyboard = new InlineKeyboard();
+    let confirmationText = "";
 
-    return ctx.reply(
-      `Logged: *${safeFood}* with *${newCalories} kcal* ✅\n` +
-      `Scaled Macros: P:${scaledProtein}g | C:${scaledCarbs}g | F:${scaledFat}g` +
-      streakMessage,
-      { parse_mode: "Markdown", reply_markup: saveKeyboard }
-    );
+    if (insertedLogs.length === 1) {
+      const log = insertedLogs[0];
+      const safeFood = escapeMarkdown(log.food_name);
+      saveKeyboard.text("⭐ Save as Preset", `save_preset:${log.id}`);
+      confirmationText = 
+        `Logged: *${safeFood}* with *${log.calories} kcal* ✅\n` +
+        `Scaled Macros: P:${log.protein}g | C:${log.carbs}g | F:${log.fat}g`;
+    } else {
+      confirmationText = `Logged *${insertedLogs.length} items* with updated total *${newCalories} kcal* ✅\n\n`;
+      insertedLogs.forEach((log) => {
+        const safeFood = escapeMarkdown(log.food_name);
+        confirmationText += `• *${safeFood}* — ${log.calories} kcal (P:${log.protein}g C:${log.carbs}g F:${log.fat}g)\n`;
+        const shortName = log.food_name.length > 16 ? log.food_name.substring(0, 14) + "…" : log.food_name;
+        saveKeyboard.text(`⭐ Save "${shortName}"`, `save_preset:${log.id}`).row();
+      });
+    }
+
+    confirmationText += streakMessage;
+
+    return ctx.reply(confirmationText, { parse_mode: "Markdown", reply_markup: saveKeyboard });
   }
 
   if (!ctx.message.text.startsWith("/")) {
@@ -1127,11 +1359,29 @@ bot.on("message:text", async (ctx) => {
   }
 });
 
-// ── Scheduled Reminders & Sarcastic AI Coaching ──────────────────────────────
+// ── Scheduled Reminders & AI Coaching (Custom Personas) ──────────────────────
 
-async function generateSarcasticAICoaching(userId: number, type: "daily" | "weekly"): Promise<string | null> {
+async function generateAICoaching(userId: number, type: "daily" | "weekly"): Promise<string | null> {
   try {
     const geminiUrl = `https://generativelanguage.googleapis.com/v1beta/models/gemini-3.1-flash-lite:generateContent?key=${geminiApiKey}`;
+
+    const { data: profile } = await supabase
+      .from("user_profiles")
+      .select("daily_target, streak_count, persona")
+      .eq("user_id", userId)
+      .maybeSingle();
+
+    const target = profile?.daily_target ?? 2000;
+    const persona = profile?.persona || "sarcastic";
+
+    let toneInstruction = "";
+    if (persona === "supportive") {
+      toneInstruction = "You are a warm, empathetic, gentle, and encouraging cheerleader AI nutrition coach. Praise their efforts and provide uplifting positivity.";
+    } else if (persona === "sergeant") {
+      toneInstruction = "You are an intense, strict, no-nonsense military drill sergeant AI nutrition coach. Demand discipline, highlight weaknesses bluntly, and push them to crush their goals.";
+    } else {
+      toneInstruction = "You are a witty, hilarious, and sarcastically humorous AI nutrition coach. Roast their eating habits playfully, keep it funny and sarcastic, but encouraging.";
+    }
 
     if (type === "daily") {
       const sgtStartIso = getSGTStartOfDayISO();
@@ -1141,15 +1391,13 @@ async function generateSarcasticAICoaching(userId: number, type: "daily" | "week
         .eq("user_id", userId)
         .gte("created_at", sgtStartIso);
 
-      const { data: profile } = await supabase.from("user_profiles").select("daily_target").eq("user_id", userId).maybeSingle();
-      const target = profile?.daily_target ?? 2000;
       const totalCal = (logs ?? []).reduce((sum, item) => sum + item.calories, 0);
 
       const promptText = 
-        `You are a witty, hilarious, and sarcastically humorous AI nutrition coach. ` +
-        `Write a short 2-sentence cheeky daily recap for a user in Singapore. ` +
+        `${toneInstruction} ` +
+        `Write a short 2-sentence daily recap for a user in Singapore. ` +
         `Data for today: Total Consumed = ${totalCal} kcal, Daily Goal = ${target} kcal. Foods eaten: ${JSON.stringify(logs)}. ` +
-        `Keep it funny, slightly sarcastic, but encouraging! Output plain text only.`;
+        `Output plain text only.`;
 
       const res = await fetch(geminiUrl, {
         method: "POST",
@@ -1166,14 +1414,11 @@ async function generateSarcasticAICoaching(userId: number, type: "daily" | "week
         .eq("user_id", userId)
         .gte("created_at", sevenDaysAgoIso);
 
-      const { data: profile } = await supabase.from("user_profiles").select("daily_target, streak_count").eq("user_id", userId).maybeSingle();
-      const target = profile?.daily_target ?? 2000;
-
       const promptText = 
-        `You are a witty, hilarious, and sarcastically humorous AI nutrition coach. ` +
-        `Write a 1-paragraph humorous weekly review of the user's progress. ` +
+        `${toneInstruction} ` +
+        `Write a 1-paragraph weekly review of the user's progress for the past 7 days. ` +
         `Daily Goal = ${target} kcal. Streak = ${profile?.streak_count ?? 0} days. Total logs in last 7 days = ${logs?.length ?? 0}. ` +
-        `Keep it witty, funny, and engaging! Output plain text only.`;
+        `Output plain text only.`;
 
       const res = await fetch(geminiUrl, {
         method: "POST",
@@ -1194,7 +1439,7 @@ async function sendCronReminders(type: "midday" | "night" | "weekly") {
   
   const { data: users, error } = await supabase
     .from("user_profiles")
-    .select("user_id")
+    .select("user_id, persona")
     .eq("reminders_enabled", true);
 
   if (error || !users || users.length === 0) return;
@@ -1203,13 +1448,19 @@ async function sendCronReminders(type: "midday" | "night" | "weekly") {
 
   for (const user of users) {
     const userId = user.user_id;
+    const personaStyle = user.persona || "sarcastic";
 
     if (type === "weekly") {
-      const weeklyCoaching = await generateSarcasticAICoaching(userId, "weekly");
+      const weeklyCoaching = await generateAICoaching(userId, "weekly");
       if (weeklyCoaching) {
         try {
           const safeCoaching = escapeMarkdown(weeklyCoaching);
-          await bot.api.sendMessage(userId, `🤖 *Weekly AI Nutrition Roast & Review (SGT)* 🥑\n\n${safeCoaching}`, { parse_mode: "Markdown" });
+          const header = personaStyle === "supportive" 
+            ? "💖 *Weekly AI Nutrition Encouragement & Review (SGT)* 🥑"
+            : personaStyle === "sergeant"
+            ? "🪖 *Weekly Drill Sergeant Nutrition Debrief (SGT)* 🥑"
+            : "🤖 *Weekly AI Nutrition Roast & Review (SGT)* 🥑";
+          await bot.api.sendMessage(userId, `${header}\n\n${safeCoaching}`, { parse_mode: "Markdown" });
         } catch (err) { console.error(`Failed to send weekly coaching to ${userId}:`, err); }
       }
       continue;
@@ -1234,9 +1485,14 @@ async function sendCronReminders(type: "midday" | "night" | "weekly") {
         );
       } catch (err) { console.error(`Failed to send midday message to ${userId}:`, err); }
     } else if (type === "night") {
-      const dailyCoaching = await generateSarcasticAICoaching(userId, "daily");
+      const dailyCoaching = await generateAICoaching(userId, "daily");
       const safeDailyCoaching = dailyCoaching ? escapeMarkdown(dailyCoaching) : null;
-      const coachingText = safeDailyCoaching ? `\n\n😏 *Daily AI Roast:*\n_${safeDailyCoaching}_` : "";
+      const roastHeader = personaStyle === "supportive" 
+        ? "💖 *Daily Coach Note:*"
+        : personaStyle === "sergeant"
+        ? "🪖 *Sergeant's Report:*"
+        : "😏 *Daily AI Roast:*";
+      const coachingText = safeDailyCoaching ? `\n\n${roastHeader}\n_${safeDailyCoaching}_` : "";
 
       try {
         const text = logCount === 0 
