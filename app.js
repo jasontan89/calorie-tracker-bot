@@ -4,6 +4,7 @@
  */
 
 const API_BASE_URL = "https://blcsjvifiytbznwesmyx.supabase.co/functions/v1/telegram-bot";
+const SUPABASE_ANON_KEY = "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6ImJsY3NqdmlmaXl0Ynpud2VzbXl4Iiwicm9sZSI6ImFub24iLCJpYXQiOjE3ODI4MTkzNDcsImV4cCI6MjA5ODM5NTM0N30.PhO08MviDmKyRn941IngM9-WaG_j7lwiCL5IqzG5qt0";
 
 // Global App State
 let appState = {
@@ -35,6 +36,21 @@ let currentServingMultiplier = 1.0;
 // Telegram WebApp Object Reference
 const tg = window.Telegram?.WebApp;
 
+// Helper function to build headers with Supabase apikey and Telegram initData
+function getApiHeaders(customHeaders = {}) {
+  const initData = tg?.initData || "";
+  const headers = {
+    "Content-Type": "application/json",
+    "apikey": SUPABASE_ANON_KEY,
+    ...customHeaders
+  };
+  if (initData) {
+    headers["Authorization"] = `Bearer ${initData}`;
+    headers["X-Telegram-Init-Data"] = initData;
+  }
+  return headers;
+}
+
 // Initialize on DOM load
 document.addEventListener("DOMContentLoaded", () => {
   initTelegramWebApp();
@@ -47,9 +63,9 @@ document.addEventListener("DOMContentLoaded", () => {
  */
 function initTelegramWebApp() {
   if (tg) {
-    tg.ready();
-    tg.expand();
     try {
+      tg.ready();
+      tg.expand();
       tg.enableClosingConfirmation();
     } catch (e) {}
 
@@ -72,9 +88,11 @@ function initTelegramWebApp() {
     // Set User details from Telegram
     if (tg.initDataUnsafe?.user) {
       const u = tg.initDataUnsafe.user;
-      document.getElementById("user-name").textContent = u.first_name + (u.last_name ? ` ${u.last_name}` : "");
-      if (u.first_name) {
-        document.getElementById("user-avatar").textContent = u.first_name.charAt(0).toUpperCase();
+      const userNameElem = document.getElementById("user-name");
+      const userAvatarElem = document.getElementById("user-avatar");
+      if (userNameElem) userNameElem.textContent = u.first_name + (u.last_name ? ` ${u.last_name}` : "");
+      if (userAvatarElem && u.first_name) {
+        userAvatarElem.textContent = u.first_name.charAt(0).toUpperCase();
       }
     }
   }
@@ -116,7 +134,8 @@ function setupEventListeners() {
       document.querySelectorAll(".btn-fast-preset").forEach((b) => b.classList.remove("active"));
       btn.classList.add("active");
       selectedFastHours = parseInt(btn.getAttribute("data-hours"), 10) || 16;
-      document.getElementById("btn-start-fast").textContent = `⏰ Start ${selectedFastHours}h Fast`;
+      const startBtn = document.getElementById("btn-start-fast");
+      if (startBtn) startBtn.textContent = `⏰ Start ${selectedFastHours}h Fast`;
       triggerHaptic("light");
     });
   });
@@ -269,21 +288,19 @@ function switchTab(tabId) {
  */
 async function fetchDashboardData() {
   showLoading(true);
+
+  // 8-second safety timeout controller
+  const controller = new AbortController();
+  const timeoutId = setTimeout(() => controller.abort(), 8000);
+
   try {
-    const initData = tg?.initData || "";
-    const headers = {
-      "Content-Type": "application/json"
-    };
-
-    if (initData) {
-      headers["Authorization"] = `Bearer ${initData}`;
-      headers["X-Telegram-Init-Data"] = initData;
-    }
-
     const response = await fetch(`${API_BASE_URL}?api=dashboard`, {
       method: "GET",
-      headers: headers
+      headers: getApiHeaders(),
+      signal: controller.signal
     });
+
+    clearTimeout(timeoutId);
 
     if (!response.ok) {
       throw new Error(`API error: ${response.status} ${response.statusText}`);
@@ -293,24 +310,29 @@ async function fetchDashboardData() {
     appState = {
       ...appState,
       ...data,
-      selectedDate: data.todayDate
+      selectedDate: data.todayDate || new Date().toISOString().substring(0, 10)
     };
 
     renderAllViews();
     showLoading(false);
   } catch (err) {
+    clearTimeout(timeoutId);
     console.error("Failed to load dashboard data:", err);
     showLoading(false);
-    
-    // If running in development without Telegram initData, populate mock data for preview
-    if (!tg?.initData) {
+
+    // Fallback gracefully so the screen is never stuck
+    if (!appState.profile) {
       loadMockDataForPreview();
-      showToast("Showing demo preview (open inside Telegram for live data)");
-      return;
     }
 
-    document.getElementById("error-banner").style.display = "flex";
-    document.getElementById("error-text").textContent = "Failed to connect to backend.";
+    const errorBanner = document.getElementById("error-banner");
+    const errorText = document.getElementById("error-text");
+    if (errorBanner && errorText) {
+      errorBanner.style.display = "flex";
+      errorText.textContent = tg?.initData
+        ? "⚠️ Connected in offline mode. Tap Retry to sync live."
+        : "Showing preview mode (open inside Telegram for live data).";
+    }
   }
 }
 
@@ -318,14 +340,18 @@ async function fetchDashboardData() {
  * Render All UI Components
  */
 function renderAllViews() {
-  renderHeader();
-  renderSummaryCard();
-  renderFastingCard();
-  renderChart();
-  renderDatePills();
-  renderMealsList();
-  renderPresetsList();
-  renderSettingsView();
+  try {
+    renderHeader();
+    renderSummaryCard();
+    renderFastingCard();
+    renderChart();
+    renderDatePills();
+    renderMealsList();
+    renderPresetsList();
+    renderSettingsView();
+  } catch (renderErr) {
+    console.error("Error rendering views:", renderErr);
+  }
 }
 
 /**
@@ -334,15 +360,19 @@ function renderAllViews() {
 function renderHeader() {
   const profile = appState.profile;
   if (profile) {
-    document.getElementById("streak-count").textContent = profile.streak_count || 0;
-    document.getElementById("header-target").textContent = profile.daily_target || 2000;
-    if (profile.first_name) {
-      document.getElementById("user-name").textContent = profile.first_name;
-      document.getElementById("user-avatar").textContent = profile.first_name.charAt(0).toUpperCase();
-    }
+    const streakElem = document.getElementById("streak-count");
+    const targetElem = document.getElementById("header-target");
+    const userNameElem = document.getElementById("user-name");
+    const avatarElem = document.getElementById("user-avatar");
+
+    if (streakElem) streakElem.textContent = profile.streak_count || 0;
+    if (targetElem) targetElem.textContent = profile.daily_target || 2000;
+    if (userNameElem && profile.first_name) userNameElem.textContent = profile.first_name;
+    if (avatarElem && profile.first_name) avatarElem.textContent = profile.first_name.charAt(0).toUpperCase();
   }
   if (appState.todayDate) {
-    document.getElementById("current-date-badge").textContent = `${appState.todayDate} (SGT)`;
+    const dateBadge = document.getElementById("current-date-badge");
+    if (dateBadge) dateBadge.textContent = `${appState.todayDate} (SGT)`;
   }
 }
 
@@ -351,54 +381,67 @@ function renderHeader() {
  */
 function renderSummaryCard() {
   const target = appState.profile?.daily_target || 2000;
-  const current = appState.todayTotals.calories || 0;
+  const current = appState.todayTotals?.calories || 0;
   const remaining = target - current;
 
-  document.getElementById("today-calories").textContent = current.toLocaleString();
-  document.getElementById("today-target").textContent = target.toLocaleString();
+  const todayCalElem = document.getElementById("today-calories");
+  const todayTargetElem = document.getElementById("today-target");
+  if (todayCalElem) todayCalElem.textContent = current.toLocaleString();
+  if (todayTargetElem) todayTargetElem.textContent = target.toLocaleString();
 
   const pct = Math.min(Math.round((current / target) * 100), 100);
   const fillBar = document.getElementById("calorie-bar-fill");
-  fillBar.style.width = `${pct}%`;
+  if (fillBar) fillBar.style.width = `${pct}%`;
 
   const budgetBadge = document.getElementById("calorie-budget-badge");
   const remainingText = document.getElementById("calorie-remaining-text");
 
-  if (remaining >= 0) {
-    budgetBadge.textContent = `${pct}% consumed`;
-    budgetBadge.style.color = "var(--primary-accent)";
-    budgetBadge.style.borderColor = "rgba(16, 185, 129, 0.3)";
-    remainingText.textContent = `🍏 ${remaining.toLocaleString()} kcal left in daily budget`;
-    fillBar.classList.remove("over-target");
-  } else {
-    const over = Math.abs(remaining);
-    budgetBadge.textContent = `${over} kcal OVER`;
-    budgetBadge.style.color = "var(--danger-color)";
-    budgetBadge.style.borderColor = "rgba(239, 68, 68, 0.3)";
-    remainingText.textContent = `⚠️ Over budget by ${over.toLocaleString()} kcal`;
-    fillBar.classList.add("over-target");
+  if (budgetBadge && remainingText) {
+    if (remaining >= 0) {
+      budgetBadge.textContent = `${pct}% consumed`;
+      budgetBadge.style.color = "var(--primary-accent)";
+      budgetBadge.style.borderColor = "rgba(16, 185, 129, 0.3)";
+      remainingText.textContent = `🍏 ${remaining.toLocaleString()} kcal left in daily budget`;
+      if (fillBar) fillBar.classList.remove("over-target");
+    } else {
+      const over = Math.abs(remaining);
+      budgetBadge.textContent = `${over} kcal OVER`;
+      budgetBadge.style.color = "var(--danger-color)";
+      budgetBadge.style.borderColor = "rgba(239, 68, 68, 0.3)";
+      remainingText.textContent = `⚠️ Over budget by ${over.toLocaleString()} kcal`;
+      if (fillBar) fillBar.classList.add("over-target");
+    }
   }
 
   // Macronutrients
-  const pTarget = appState.macroTargets.protein || 150;
-  const cTarget = appState.macroTargets.carbs || 200;
-  const fTarget = appState.macroTargets.fat || 67;
+  const pTarget = appState.macroTargets?.protein || 150;
+  const cTarget = appState.macroTargets?.carbs || 200;
+  const fTarget = appState.macroTargets?.fat || 67;
 
-  const pVal = appState.todayTotals.protein || 0;
-  const cVal = appState.todayTotals.carbs || 0;
-  const fVal = appState.todayTotals.fat || 0;
+  const pVal = appState.todayTotals?.protein || 0;
+  const cVal = appState.todayTotals?.carbs || 0;
+  const fVal = appState.todayTotals?.fat || 0;
 
-  document.getElementById("macro-p-val").textContent = pVal;
-  document.getElementById("macro-p-target").textContent = pTarget;
-  document.getElementById("macro-p-fill").style.width = `${Math.min(Math.round((pVal / pTarget) * 100), 100)}%`;
+  const pValElem = document.getElementById("macro-p-val");
+  const pTargetElem = document.getElementById("macro-p-target");
+  const pFillElem = document.getElementById("macro-p-fill");
+  if (pValElem) pValElem.textContent = pVal;
+  if (pTargetElem) pTargetElem.textContent = pTarget;
+  if (pFillElem) pFillElem.style.width = `${Math.min(Math.round((pVal / pTarget) * 100), 100)}%`;
 
-  document.getElementById("macro-c-val").textContent = cVal;
-  document.getElementById("macro-c-target").textContent = cTarget;
-  document.getElementById("macro-c-fill").style.width = `${Math.min(Math.round((cVal / cTarget) * 100), 100)}%`;
+  const cValElem = document.getElementById("macro-c-val");
+  const cTargetElem = document.getElementById("macro-c-target");
+  const cFillElem = document.getElementById("macro-c-fill");
+  if (cValElem) cValElem.textContent = cVal;
+  if (cTargetElem) cTargetElem.textContent = cTarget;
+  if (cFillElem) cFillElem.style.width = `${Math.min(Math.round((cVal / cTarget) * 100), 100)}%`;
 
-  document.getElementById("macro-f-val").textContent = fVal;
-  document.getElementById("macro-f-target").textContent = fTarget;
-  document.getElementById("macro-f-fill").style.width = `${Math.min(Math.round((fVal / fTarget) * 100), 100)}%`;
+  const fValElem = document.getElementById("macro-f-val");
+  const fTargetElem = document.getElementById("macro-f-target");
+  const fFillElem = document.getElementById("macro-f-fill");
+  if (fValElem) fValElem.textContent = fVal;
+  if (fTargetElem) fTargetElem.textContent = fTarget;
+  if (fFillElem) fFillElem.style.width = `${Math.min(Math.round((fVal / fTarget) * 100), 100)}%`;
 }
 
 // ── FASTING TIMER COMPONENT ──────────────────────────────────────────────────
@@ -507,14 +550,9 @@ function updateFastingRingUI() {
 async function handleStartFast(targetHours) {
   showLoading(true);
   try {
-    const initData = tg?.initData || "";
     const res = await fetch(`${API_BASE_URL}?api=start_fast`, {
       method: "POST",
-      headers: {
-        "Content-Type": "application/json",
-        "Authorization": `Bearer ${initData}`,
-        "X-Telegram-Init-Data": initData
-      },
+      headers: getApiHeaders(),
       body: JSON.stringify({ target_hours: targetHours })
     });
 
@@ -539,14 +577,9 @@ async function handleStopFast() {
   const proceed = async () => {
     showLoading(true);
     try {
-      const initData = tg?.initData || "";
       const res = await fetch(`${API_BASE_URL}?api=stop_fast`, {
         method: "POST",
-        headers: {
-          "Content-Type": "application/json",
-          "Authorization": `Bearer ${initData}`,
-          "X-Telegram-Init-Data": initData
-        }
+        headers: getApiHeaders()
       });
 
       if (!res.ok) throw new Error("Failed to stop fast");
@@ -577,14 +610,9 @@ async function handleStopFast() {
 async function handleCancelFast() {
   showLoading(true);
   try {
-    const initData = tg?.initData || "";
     await fetch(`${API_BASE_URL}?api=cancel_fast`, {
       method: "POST",
-      headers: {
-        "Content-Type": "application/json",
-        "Authorization": `Bearer ${initData}`,
-        "X-Telegram-Init-Data": initData
-      }
+      headers: getApiHeaders()
     });
 
     appState.activeFast = null;
@@ -608,27 +636,28 @@ function openBarcodeScanner() {
   modal.style.display = "flex";
 
   if (window.Html5Qrcode) {
-    html5QrCodeScanner = new Html5Qrcode("scanner-reader");
-    const config = { fps: 10, qrbox: { width: 250, height: 180 }, aspectRatio: 1.0 };
-    
-    html5QrCodeScanner.start(
-      { facingMode: "environment" },
-      config,
-      (decodedText) => {
-        // Success callback
-        triggerHaptic("success");
-        closeBarcodeScanner();
-        lookupBarcodeProduct(decodedText);
-      },
-      (error) => {
-        // Continuous scan error, ignore
-      }
-    ).then(() => {
-      isScannerActive = true;
-    }).catch((err) => {
-      console.error("Camera access error:", err);
-      showToast("Camera permission needed to scan barcodes", true);
-    });
+    try {
+      html5QrCodeScanner = new Html5Qrcode("scanner-reader");
+      const config = { fps: 10, qrbox: { width: 250, height: 180 }, aspectRatio: 1.0 };
+      
+      html5QrCodeScanner.start(
+        { facingMode: "environment" },
+        config,
+        (decodedText) => {
+          triggerHaptic("success");
+          closeBarcodeScanner();
+          lookupBarcodeProduct(decodedText);
+        },
+        () => {}
+      ).then(() => {
+        isScannerActive = true;
+      }).catch((err) => {
+        console.error("Camera access error:", err);
+        showToast("Camera permission needed to scan barcodes", true);
+      });
+    } catch (scannerErr) {
+      console.error("Scanner init error:", scannerErr);
+    }
   }
 }
 
@@ -653,13 +682,9 @@ function closeBarcodeScanner() {
 async function lookupBarcodeProduct(barcode) {
   showLoading(true);
   try {
-    const initData = tg?.initData || "";
     const res = await fetch(`${API_BASE_URL}?api=lookup_barcode&barcode=${encodeURIComponent(barcode)}`, {
       method: "GET",
-      headers: {
-        "Authorization": `Bearer ${initData}`,
-        "X-Telegram-Init-Data": initData
-      }
+      headers: getApiHeaders()
     });
 
     if (!res.ok) {
@@ -688,14 +713,19 @@ function openProductResultModal(product) {
   const modal = document.getElementById("barcode-result-modal");
   if (!modal || !product) return;
 
-  document.getElementById("product-name").textContent = product.name;
-  document.getElementById("product-serving-label").textContent = product.serving || "1 serving";
-
+  const nameElem = document.getElementById("product-name");
+  const servingElem = document.getElementById("product-serving-label");
   const imgWrap = document.getElementById("product-img-wrap");
-  if (product.image) {
-    imgWrap.innerHTML = `<img src="${product.image}" alt="Product">`;
-  } else {
-    imgWrap.innerHTML = `🥫`;
+
+  if (nameElem) nameElem.textContent = product.name;
+  if (servingElem) servingElem.textContent = product.serving || "1 serving";
+
+  if (imgWrap) {
+    if (product.image) {
+      imgWrap.innerHTML = `<img src="${escapeHtml(product.image)}" alt="Product">`;
+    } else {
+      imgWrap.innerHTML = `🥫`;
+    }
   }
 
   // Reset portion multiplier pills
@@ -728,10 +758,15 @@ function updateProductResultCalculations() {
   const c = Math.round(currentScannedProduct.carbs * mul);
   const f = Math.round(currentScannedProduct.fat * mul);
 
-  document.getElementById("product-cal-val").textContent = `${cal} kcal`;
-  document.getElementById("product-p-val").textContent = `${p}g`;
-  document.getElementById("product-c-val").textContent = `${c}g`;
-  document.getElementById("product-f-val").textContent = `${f}g`;
+  const calElem = document.getElementById("product-cal-val");
+  const pElem = document.getElementById("product-p-val");
+  const cElem = document.getElementById("product-c-val");
+  const fElem = document.getElementById("product-f-val");
+
+  if (calElem) calElem.textContent = `${cal} kcal`;
+  if (pElem) pElem.textContent = `${p}g`;
+  if (cElem) cElem.textContent = `${c}g`;
+  if (fElem) fElem.textContent = `${f}g`;
 }
 
 /**
@@ -749,14 +784,9 @@ async function handleLogBarcodeProduct() {
   const mealType = document.getElementById("select-meal-type")?.value || "Meal";
 
   try {
-    const initData = tg?.initData || "";
     const res = await fetch(`${API_BASE_URL}?api=log_barcode_meal`, {
       method: "POST",
-      headers: {
-        "Content-Type": "application/json",
-        "Authorization": `Bearer ${initData}`,
-        "X-Telegram-Init-Data": initData
-      },
+      headers: getApiHeaders(),
       body: JSON.stringify({
         food_name: currentScannedProduct.name,
         calories: cal,
@@ -788,14 +818,9 @@ async function handleLogBarcodeProduct() {
 async function handleGenerateWeeklyReport() {
   showLoading(true);
   try {
-    const initData = tg?.initData || "";
     const res = await fetch(`${API_BASE_URL}?api=generate_weekly_report`, {
       method: "POST",
-      headers: {
-        "Content-Type": "application/json",
-        "Authorization": `Bearer ${initData}`,
-        "X-Telegram-Init-Data": initData
-      }
+      headers: getApiHeaders()
     });
 
     showLoading(false);
@@ -880,48 +905,54 @@ function renderChart() {
     ];
   }
 
-  appState.chartInstance = new Chart(ctx, {
-    type: "bar",
-    data: { labels, datasets },
-    options: {
-      responsive: true,
-      maintainAspectRatio: false,
-      onClick: (event, elements) => {
-        if (elements && elements.length > 0) {
-          const index = elements[0].index;
-          const selected = history[index];
-          if (selected) {
-            selectDate(selected.date);
-            triggerHaptic("light");
+  if (window.Chart) {
+    try {
+      appState.chartInstance = new Chart(ctx, {
+        type: "bar",
+        data: { labels, datasets },
+        options: {
+          responsive: true,
+          maintainAspectRatio: false,
+          onClick: (event, elements) => {
+            if (elements && elements.length > 0) {
+              const index = elements[0].index;
+              const selected = history[index];
+              if (selected) {
+                selectDate(selected.date);
+                triggerHaptic("light");
+              }
+            }
+          },
+          plugins: {
+            legend: {
+              display: appState.currentChartView === "macros",
+              labels: { color: "#94a3b8", font: { size: 10 } }
+            },
+            tooltip: {
+              backgroundColor: "rgba(15, 23, 42, 0.95)",
+              titleColor: "#f8fafc",
+              bodyColor: "#f8fafc",
+              borderColor: "rgba(255, 255, 255, 0.1)",
+              borderWidth: 1,
+              padding: 8
+            }
+          },
+          scales: {
+            x: {
+              grid: { display: false },
+              ticks: { color: "#94a3b8", font: { size: 10 } }
+            },
+            y: {
+              grid: { color: "rgba(255, 255, 255, 0.05)" },
+              ticks: { color: "#94a3b8", font: { size: 10 } }
+            }
           }
         }
-      },
-      plugins: {
-        legend: {
-          display: appState.currentChartView === "macros",
-          labels: { color: "#94a3b8", font: { size: 10 } }
-        },
-        tooltip: {
-          backgroundColor: "rgba(15, 23, 42, 0.95)",
-          titleColor: "#f8fafc",
-          bodyColor: "#f8fafc",
-          borderColor: "rgba(255, 255, 255, 0.1)",
-          borderWidth: 1,
-          padding: 8
-        }
-      },
-      scales: {
-        x: {
-          grid: { display: false },
-          ticks: { color: "#94a3b8", font: { size: 10 } }
-        },
-        y: {
-          grid: { color: "rgba(255, 255, 255, 0.05)" },
-          ticks: { color: "#94a3b8", font: { size: 10 } }
-        }
-      }
+      });
+    } catch (chartErr) {
+      console.error("Chart render error:", chartErr);
     }
-  });
+  }
 }
 
 /**
@@ -963,9 +994,12 @@ function renderMealsList() {
   if (!container) return;
   const isToday = appState.selectedDate === appState.todayDate;
   
-  document.getElementById("meals-card-title").textContent = isToday 
-    ? "🍽️ Today's Logged Meals" 
-    : `🍽️ Meals on ${appState.selectedDate}`;
+  const titleElem = document.getElementById("meals-card-title");
+  if (titleElem) {
+    titleElem.textContent = isToday 
+      ? "🍽️ Today's Logged Meals" 
+      : `🍽️ Meals on ${appState.selectedDate}`;
+  }
 
   let logs = [];
   if (isToday) {
@@ -975,7 +1009,8 @@ function renderMealsList() {
     logs = dayData?.logs || [];
   }
 
-  document.getElementById("meals-count-badge").textContent = `${logs.length} meal${logs.length === 1 ? "" : "s"}`;
+  const countBadge = document.getElementById("meals-count-badge");
+  if (countBadge) countBadge.textContent = `${logs.length} meal${logs.length === 1 ? "" : "s"}`;
   container.innerHTML = "";
 
   if (logs.length === 0) {
@@ -1004,7 +1039,7 @@ function renderMealsList() {
       </div>
     `;
 
-    card.querySelector(".btn-icon-delete").addEventListener("click", () => {
+    card.querySelector(".btn-icon-delete")?.addEventListener("click", () => {
       confirmAndDeleteMeal(log.id, log.food_name);
     });
 
@@ -1022,14 +1057,9 @@ async function confirmAndDeleteMeal(logId, foodName) {
     if (elem) elem.style.opacity = "0.3";
 
     try {
-      const initData = tg?.initData || "";
       const res = await fetch(`${API_BASE_URL}?api=delete_food`, {
         method: "POST",
-        headers: {
-          "Content-Type": "application/json",
-          "Authorization": `Bearer ${initData}`,
-          "X-Telegram-Init-Data": initData
-        },
+        headers: getApiHeaders(),
         body: JSON.stringify({ log_id: logId })
       });
 
@@ -1089,11 +1119,11 @@ function renderPresetsList() {
       </div>
     `;
 
-    card.querySelector(".btn-log-preset").addEventListener("click", () => {
+    card.querySelector(".btn-log-preset")?.addEventListener("click", () => {
       logPresetToToday(preset.id, preset.food_name);
     });
 
-    card.querySelector(".btn-delete-preset").addEventListener("click", () => {
+    card.querySelector(".btn-delete-preset")?.addEventListener("click", () => {
       deletePreset(preset.id, preset.food_name);
     });
 
@@ -1107,14 +1137,9 @@ function renderPresetsList() {
 async function logPresetToToday(presetId, foodName) {
   triggerHaptic("medium");
   try {
-    const initData = tg?.initData || "";
     const res = await fetch(`${API_BASE_URL}?api=log_preset`, {
       method: "POST",
-      headers: {
-        "Content-Type": "application/json",
-        "Authorization": `Bearer ${initData}`,
-        "X-Telegram-Init-Data": initData
-      },
+      headers: getApiHeaders(),
       body: JSON.stringify({ preset_id: presetId })
     });
 
@@ -1136,14 +1161,9 @@ async function deletePreset(presetId, foodName) {
   const proceed = async () => {
     triggerHaptic("warning");
     try {
-      const initData = tg?.initData || "";
       const res = await fetch(`${API_BASE_URL}?api=delete_preset`, {
         method: "POST",
-        headers: {
-          "Content-Type": "application/json",
-          "Authorization": `Bearer ${initData}`,
-          "X-Telegram-Init-Data": initData
-        },
+        headers: getApiHeaders(),
         body: JSON.stringify({ preset_id: presetId })
       });
 
@@ -1203,9 +1223,9 @@ function renderSettingsView() {
   const cInput = document.getElementById("input-target-c");
   const fInput = document.getElementById("input-target-f");
 
-  if (pInput) pInput.value = appState.macroTargets.protein || 150;
-  if (cInput) cInput.value = appState.macroTargets.carbs || 200;
-  if (fInput) fInput.value = appState.macroTargets.fat || 67;
+  if (pInput) pInput.value = appState.macroTargets?.protein || 150;
+  if (cInput) cInput.value = appState.macroTargets?.carbs || 200;
+  if (fInput) fInput.value = appState.macroTargets?.fat || 67;
 }
 
 /**
@@ -1216,14 +1236,9 @@ async function updatePersona(newPersona) {
   document.getElementById(`persona-${newPersona}`)?.classList.add("selected");
 
   try {
-    const initData = tg?.initData || "";
     const res = await fetch(`${API_BASE_URL}?api=update_persona`, {
       method: "POST",
-      headers: {
-        "Content-Type": "application/json",
-        "Authorization": `Bearer ${initData}`,
-        "X-Telegram-Init-Data": initData
-      },
+      headers: getApiHeaders(),
       body: JSON.stringify({ persona: newPersona })
     });
 
@@ -1246,14 +1261,9 @@ async function updateLoggingMode(newMode) {
   document.getElementById(`mode-${newMode}`)?.classList.add("selected");
 
   try {
-    const initData = tg?.initData || "";
     const res = await fetch(`${API_BASE_URL}?api=update_logging_mode`, {
       method: "POST",
-      headers: {
-        "Content-Type": "application/json",
-        "Authorization": `Bearer ${initData}`,
-        "X-Telegram-Init-Data": initData
-      },
+      headers: getApiHeaders(),
       body: JSON.stringify({ mode: newMode })
     });
 
@@ -1274,14 +1284,9 @@ async function updateLoggingMode(newMode) {
  */
 async function updateCalorieTarget(newTarget) {
   try {
-    const initData = tg?.initData || "";
     const res = await fetch(`${API_BASE_URL}?api=update_target`, {
       method: "POST",
-      headers: {
-        "Content-Type": "application/json",
-        "Authorization": `Bearer ${initData}`,
-        "X-Telegram-Init-Data": initData
-      },
+      headers: getApiHeaders(),
       body: JSON.stringify({ target: newTarget })
     });
 
@@ -1302,14 +1307,9 @@ async function updateCalorieTarget(newTarget) {
  */
 async function updateMacroTargets(protein, carbs, fat) {
   try {
-    const initData = tg?.initData || "";
     const res = await fetch(`${API_BASE_URL}?api=update_macros`, {
       method: "POST",
-      headers: {
-        "Content-Type": "application/json",
-        "Authorization": `Bearer ${initData}`,
-        "X-Telegram-Init-Data": initData
-      },
+      headers: getApiHeaders(),
       body: JSON.stringify({ protein, carbs, fat })
     });
 
@@ -1330,14 +1330,9 @@ async function updateMacroTargets(protein, carbs, fat) {
  */
 async function resetToAutoMacros() {
   try {
-    const initData = tg?.initData || "";
     const res = await fetch(`${API_BASE_URL}?api=update_macros`, {
       method: "POST",
-      headers: {
-        "Content-Type": "application/json",
-        "Authorization": `Bearer ${initData}`,
-        "X-Telegram-Init-Data": initData
-      },
+      headers: getApiHeaders(),
       body: JSON.stringify({ is_auto: true })
     });
 
@@ -1360,15 +1355,10 @@ async function exportFoodLogsCSV() {
   try {
     const initData = tg?.initData || "";
 
-    // 1. If inside Telegram WebApp with initData, trigger backend to send document into Telegram chat!
     if (initData) {
       const res = await fetch(`${API_BASE_URL}?api=export_csv_to_chat`, {
         method: "POST",
-        headers: {
-          "Content-Type": "application/json",
-          "Authorization": `Bearer ${initData}`,
-          "X-Telegram-Init-Data": initData
-        }
+        headers: getApiHeaders()
       });
 
       if (res.ok) {
@@ -1379,15 +1369,12 @@ async function exportFoodLogsCSV() {
       }
     }
 
-    // 2. Fallback: Browser download (for preview mode or browser testing)
+    // Fallback: Browser download
     let logs = [];
     if (initData) {
       const res = await fetch(`${API_BASE_URL}?api=export_all_logs`, {
         method: "GET",
-        headers: {
-          "Authorization": `Bearer ${initData}`,
-          "X-Telegram-Init-Data": initData
-        }
+        headers: getApiHeaders()
       });
       if (res.ok) {
         const data = await res.json();
@@ -1395,7 +1382,6 @@ async function exportFoodLogsCSV() {
       }
     }
 
-    // Fallback to locally loaded history if API empty or in preview
     if (logs.length === 0) {
       logs = appState.todayLogs || [];
       (appState.history7d || []).forEach(day => {
@@ -1411,7 +1397,6 @@ async function exportFoodLogsCSV() {
       return;
     }
 
-    // Deduplicate logs if any
     const uniqueMap = new Map();
     logs.forEach(l => { if (l.id) uniqueMap.set(l.id, l); });
     const exportList = uniqueMap.size > 0 ? Array.from(uniqueMap.values()) : logs;
@@ -1479,9 +1464,11 @@ function showLoading(show) {
   const overlay = document.getElementById("loading-spinner");
   if (!overlay) return;
   if (show) {
+    overlay.style.display = "flex";
     overlay.classList.remove("hidden");
   } else {
     overlay.classList.add("hidden");
+    overlay.style.display = "none";
   }
 }
 
