@@ -16,9 +16,21 @@ let appState = {
   todayLogs: [],
   history7d: [],
   presets: [],
+  activeFast: null,
+  recentFasts: [],
   currentChartView: "calories", // "calories" or "macros"
   chartInstance: null
 };
+
+// Fasting Timer state & interval
+let fastingTimerInterval = null;
+let selectedFastHours = 16;
+
+// Barcode Scanner state
+let html5QrCodeScanner = null;
+let isScannerActive = false;
+let currentScannedProduct = null;
+let currentServingMultiplier = 1.0;
 
 // Telegram WebApp Object Reference
 const tg = window.Telegram?.WebApp;
@@ -69,12 +81,12 @@ function initTelegramWebApp() {
 }
 
 /**
- * Setup Event Listeners for Tabs, Toggles, and Forms
+ * Setup Event Listeners for Tabs, Toggles, Fasting, Barcode, and Forms
  */
 function setupEventListeners() {
   // Tab Switching
   document.querySelectorAll(".nav-tab").forEach((btn) => {
-    btn.addEventListener("click", (e) => {
+    btn.addEventListener("click", () => {
       const tabId = btn.getAttribute("data-tab");
       switchTab(tabId);
       triggerHaptic("light");
@@ -96,6 +108,83 @@ function setupEventListeners() {
     document.getElementById("btn-chart-cal").classList.remove("active");
     renderChart();
     triggerHaptic("light");
+  });
+
+  // Fasting Preset Selection Pills
+  document.querySelectorAll(".btn-fast-preset").forEach((btn) => {
+    btn.addEventListener("click", () => {
+      document.querySelectorAll(".btn-fast-preset").forEach((b) => b.classList.remove("active"));
+      btn.classList.add("active");
+      selectedFastHours = parseInt(btn.getAttribute("data-hours"), 10) || 16;
+      document.getElementById("btn-start-fast").textContent = `⏰ Start ${selectedFastHours}h Fast`;
+      triggerHaptic("light");
+    });
+  });
+
+  // Fasting Actions (Start, Stop, Cancel)
+  document.getElementById("btn-start-fast")?.addEventListener("click", () => {
+    handleStartFast(selectedFastHours);
+    triggerHaptic("medium");
+  });
+
+  document.getElementById("btn-stop-fast")?.addEventListener("click", () => {
+    handleStopFast();
+    triggerHaptic("warning");
+  });
+
+  document.getElementById("btn-cancel-fast")?.addEventListener("click", () => {
+    handleCancelFast();
+    triggerHaptic("light");
+  });
+
+  // Barcode Scanner Modal Controls
+  document.getElementById("btn-open-scanner")?.addEventListener("click", () => {
+    openBarcodeScanner();
+    triggerHaptic("medium");
+  });
+
+  document.getElementById("btn-close-scanner")?.addEventListener("click", () => {
+    closeBarcodeScanner();
+    triggerHaptic("light");
+  });
+
+  document.getElementById("btn-search-barcode")?.addEventListener("click", () => {
+    const input = document.getElementById("input-manual-barcode");
+    const code = input?.value?.trim();
+    if (code) {
+      lookupBarcodeProduct(code);
+      triggerHaptic("medium");
+    } else {
+      showToast("Please enter barcode digits", true);
+    }
+  });
+
+  // Barcode Product Result Modal Controls
+  document.getElementById("btn-close-result-modal")?.addEventListener("click", () => {
+    closeProductResultModal();
+    triggerHaptic("light");
+  });
+
+  // Serving Multiplier Pills
+  document.querySelectorAll(".portion-pill").forEach((pill) => {
+    pill.addEventListener("click", () => {
+      document.querySelectorAll(".portion-pill").forEach((p) => p.classList.remove("active"));
+      pill.classList.add("active");
+      currentServingMultiplier = parseFloat(pill.getAttribute("data-mul")) || 1.0;
+      updateProductResultCalculations();
+      triggerHaptic("light");
+    });
+  });
+
+  document.getElementById("btn-log-barcode-item")?.addEventListener("click", () => {
+    handleLogBarcodeProduct();
+    triggerHaptic("success");
+  });
+
+  // Weekly Report Button
+  document.getElementById("btn-generate-weekly-report")?.addEventListener("click", () => {
+    handleGenerateWeeklyReport();
+    triggerHaptic("medium");
   });
 
   // Persona Selection Cards
@@ -231,6 +320,7 @@ async function fetchDashboardData() {
 function renderAllViews() {
   renderHeader();
   renderSummaryCard();
+  renderFastingCard();
   renderChart();
   renderDatePills();
   renderMealsList();
@@ -309,6 +399,417 @@ function renderSummaryCard() {
   document.getElementById("macro-f-val").textContent = fVal;
   document.getElementById("macro-f-target").textContent = fTarget;
   document.getElementById("macro-f-fill").style.width = `${Math.min(Math.round((fVal / fTarget) * 100), 100)}%`;
+}
+
+// ── FASTING TIMER COMPONENT ──────────────────────────────────────────────────
+
+/**
+ * Render Intermittent Fasting Card
+ */
+function renderFastingCard() {
+  const activeView = document.getElementById("fasting-active-view");
+  const idleView = document.getElementById("fasting-idle-view");
+  const badge = document.getElementById("fasting-status-badge");
+
+  if (!activeView || !idleView || !badge) return;
+
+  if (fastingTimerInterval) {
+    clearInterval(fastingTimerInterval);
+    fastingTimerInterval = null;
+  }
+
+  const fast = appState.activeFast;
+  if (fast && fast.status === "active") {
+    activeView.style.display = "block";
+    idleView.style.display = "none";
+    badge.textContent = "🔥 Fasting Active";
+    badge.style.color = "#f59e0b";
+    badge.style.borderColor = "rgba(245, 158, 11, 0.4)";
+
+    updateFastingRingUI();
+    fastingTimerInterval = setInterval(updateFastingRingUI, 1000);
+  } else {
+    activeView.style.display = "none";
+    idleView.style.display = "block";
+    badge.textContent = "🍽️ Not Fasting";
+    badge.style.color = "var(--hint-color)";
+    badge.style.borderColor = "var(--card-border)";
+  }
+}
+
+/**
+ * Update Fasting Progress Ring & Countdown Values
+ */
+function updateFastingRingUI() {
+  const fast = appState.activeFast;
+  if (!fast || fast.status !== "active") return;
+
+  const start = new Date(fast.start_time).getTime();
+  const now = Date.now();
+  const elapsedMs = Math.max(0, now - start);
+  const elapsedHours = elapsedMs / (1000 * 60 * 60);
+  const targetHours = Number(fast.target_hours) || 16;
+  const targetEndMs = start + targetHours * 60 * 60 * 1000;
+  const remainingMs = Math.max(0, targetEndMs - now);
+
+  const elapsedH = Math.floor(elapsedHours);
+  const elapsedM = Math.floor((elapsedMs % (1000 * 60 * 60)) / (1000 * 60));
+  const elapsedS = Math.floor((elapsedMs % (1000 * 60)) / 1000);
+
+  const remH = Math.floor(remainingMs / (1000 * 60 * 60));
+  const remM = Math.floor((remainingMs % (1000 * 60 * 60)) / (1000 * 60));
+
+  const pct = Math.min(100, Math.round((elapsedHours / targetHours) * 100));
+  const isGoalReached = now >= targetEndMs;
+
+  const circle = document.getElementById("fasting-ring-circle");
+  const circumference = 2 * Math.PI * 52; // ~326.72
+  const offset = circumference - (pct / 100) * circumference;
+
+  if (circle) {
+    circle.style.strokeDashoffset = offset;
+    circle.style.stroke = isGoalReached ? "#10b981" : "#f59e0b";
+  }
+
+  const elapsedElem = document.getElementById("fasting-elapsed-time");
+  if (elapsedElem) {
+    elapsedElem.textContent = `${elapsedH}h ${elapsedM}m ${elapsedS}s`;
+  }
+
+  const pctElem = document.getElementById("fasting-pct-text");
+  if (pctElem) {
+    pctElem.textContent = `${pct}% of ${targetHours}h`;
+  }
+
+  const goalElem = document.getElementById("fasting-goal-text");
+  if (goalElem) {
+    goalElem.textContent = isGoalReached ? "🎉 Fasting Target Achieved!" : `Target: ${targetHours} Hours`;
+  }
+
+  const finishElem = document.getElementById("fasting-finish-text");
+  if (finishElem) {
+    const endObj = new Date(targetEndMs);
+    const timeStr = new Intl.DateTimeFormat("en-SG", {
+      timeZone: "Asia/Singapore",
+      hour: "numeric",
+      minute: "2-digit",
+      hour12: true
+    }).format(endObj);
+    finishElem.textContent = isGoalReached 
+      ? `Completed at ${timeStr} (SGT)` 
+      : `End: Today at ${timeStr} (SGT) • ${remH}h ${remM}m left`;
+  }
+}
+
+/**
+ * Start Fasting via API
+ */
+async function handleStartFast(targetHours) {
+  showLoading(true);
+  try {
+    const initData = tg?.initData || "";
+    const res = await fetch(`${API_BASE_URL}?api=start_fast`, {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        "Authorization": `Bearer ${initData}`,
+        "X-Telegram-Init-Data": initData
+      },
+      body: JSON.stringify({ target_hours: targetHours })
+    });
+
+    if (!res.ok) throw new Error("Failed to start fast");
+    const data = await res.json();
+    appState.activeFast = data.fast;
+
+    showLoading(false);
+    showToast(`⏰ Started ${targetHours}h Fast! Stay hydrated.`);
+    renderFastingCard();
+  } catch (err) {
+    showLoading(false);
+    console.error("Error starting fast:", err);
+    showToast("Failed to start fast", true);
+  }
+}
+
+/**
+ * Stop Fasting via API
+ */
+async function handleStopFast() {
+  const proceed = async () => {
+    showLoading(true);
+    try {
+      const initData = tg?.initData || "";
+      const res = await fetch(`${API_BASE_URL}?api=stop_fast`, {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          "Authorization": `Bearer ${initData}`,
+          "X-Telegram-Init-Data": initData
+        }
+      });
+
+      if (!res.ok) throw new Error("Failed to stop fast");
+      appState.activeFast = null;
+
+      showLoading(false);
+      showToast("🎉 Fast Completed! Great discipline.");
+      fetchDashboardData();
+    } catch (err) {
+      showLoading(false);
+      console.error("Error stopping fast:", err);
+      showToast("Failed to complete fast", true);
+    }
+  };
+
+  if (tg?.showConfirm) {
+    tg.showConfirm("Are you ready to end your fast?", (ok) => {
+      if (ok) proceed();
+    });
+  } else if (confirm("Are you ready to end your fast?")) {
+    proceed();
+  }
+}
+
+/**
+ * Cancel Fasting via API
+ */
+async function handleCancelFast() {
+  showLoading(true);
+  try {
+    const initData = tg?.initData || "";
+    await fetch(`${API_BASE_URL}?api=cancel_fast`, {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        "Authorization": `Bearer ${initData}`,
+        "X-Telegram-Init-Data": initData
+      }
+    });
+
+    appState.activeFast = null;
+    showLoading(false);
+    showToast("Fast cancelled.");
+    renderFastingCard();
+  } catch (err) {
+    showLoading(false);
+    console.error("Error cancelling fast:", err);
+  }
+}
+
+// ── BARCODE SCANNER COMPONENT ────────────────────────────────────────────────
+
+/**
+ * Open Barcode Scanner Modal & Launch Camera
+ */
+function openBarcodeScanner() {
+  const modal = document.getElementById("scanner-modal");
+  if (!modal) return;
+  modal.style.display = "flex";
+
+  if (window.Html5Qrcode) {
+    html5QrCodeScanner = new Html5Qrcode("scanner-reader");
+    const config = { fps: 10, qrbox: { width: 250, height: 180 }, aspectRatio: 1.0 };
+    
+    html5QrCodeScanner.start(
+      { facingMode: "environment" },
+      config,
+      (decodedText) => {
+        // Success callback
+        triggerHaptic("success");
+        closeBarcodeScanner();
+        lookupBarcodeProduct(decodedText);
+      },
+      (error) => {
+        // Continuous scan error, ignore
+      }
+    ).then(() => {
+      isScannerActive = true;
+    }).catch((err) => {
+      console.error("Camera access error:", err);
+      showToast("Camera permission needed to scan barcodes", true);
+    });
+  }
+}
+
+/**
+ * Close Barcode Scanner Modal & Stop Camera
+ */
+function closeBarcodeScanner() {
+  const modal = document.getElementById("scanner-modal");
+  if (modal) modal.style.display = "none";
+
+  if (html5QrCodeScanner && isScannerActive) {
+    html5QrCodeScanner.stop().then(() => {
+      html5QrCodeScanner.clear();
+      isScannerActive = false;
+    }).catch((e) => console.error("Error stopping scanner:", e));
+  }
+}
+
+/**
+ * Lookup Barcode Product on Open Food Facts
+ */
+async function lookupBarcodeProduct(barcode) {
+  showLoading(true);
+  try {
+    const initData = tg?.initData || "";
+    const res = await fetch(`${API_BASE_URL}?api=lookup_barcode&barcode=${encodeURIComponent(barcode)}`, {
+      method: "GET",
+      headers: {
+        "Authorization": `Bearer ${initData}`,
+        "X-Telegram-Init-Data": initData
+      }
+    });
+
+    if (!res.ok) {
+      showLoading(false);
+      showToast(`Product not found for barcode ${barcode}. Try manual logging!`, true);
+      return;
+    }
+
+    const data = await res.json();
+    currentScannedProduct = data.product;
+    currentServingMultiplier = 1.0;
+
+    showLoading(false);
+    openProductResultModal(currentScannedProduct);
+  } catch (err) {
+    showLoading(false);
+    console.error("Barcode lookup error:", err);
+    showToast("Failed to lookup barcode", true);
+  }
+}
+
+/**
+ * Open Product Result Modal with Nutritional breakdown
+ */
+function openProductResultModal(product) {
+  const modal = document.getElementById("barcode-result-modal");
+  if (!modal || !product) return;
+
+  document.getElementById("product-name").textContent = product.name;
+  document.getElementById("product-serving-label").textContent = product.serving || "1 serving";
+
+  const imgWrap = document.getElementById("product-img-wrap");
+  if (product.image) {
+    imgWrap.innerHTML = `<img src="${product.image}" alt="Product">`;
+  } else {
+    imgWrap.innerHTML = `🥫`;
+  }
+
+  // Reset portion multiplier pills
+  document.querySelectorAll(".portion-pill").forEach((p) => {
+    if (p.getAttribute("data-mul") === "1.0") p.classList.add("active");
+    else p.classList.remove("active");
+  });
+
+  updateProductResultCalculations();
+  modal.style.display = "flex";
+}
+
+/**
+ * Close Product Result Modal
+ */
+function closeProductResultModal() {
+  const modal = document.getElementById("barcode-result-modal");
+  if (modal) modal.style.display = "none";
+}
+
+/**
+ * Recalculate Nutrition Values in Result Modal based on multiplier
+ */
+function updateProductResultCalculations() {
+  if (!currentScannedProduct) return;
+  const mul = currentServingMultiplier;
+
+  const cal = Math.round(currentScannedProduct.calories * mul);
+  const p = Math.round(currentScannedProduct.protein * mul);
+  const c = Math.round(currentScannedProduct.carbs * mul);
+  const f = Math.round(currentScannedProduct.fat * mul);
+
+  document.getElementById("product-cal-val").textContent = `${cal} kcal`;
+  document.getElementById("product-p-val").textContent = `${p}g`;
+  document.getElementById("product-c-val").textContent = `${c}g`;
+  document.getElementById("product-f-val").textContent = `${f}g`;
+}
+
+/**
+ * Log Scanned Barcode Product via API
+ */
+async function handleLogBarcodeProduct() {
+  if (!currentScannedProduct) return;
+  showLoading(true);
+
+  const mul = currentServingMultiplier;
+  const cal = Math.round(currentScannedProduct.calories * mul);
+  const p = Math.round(currentScannedProduct.protein * mul);
+  const c = Math.round(currentScannedProduct.carbs * mul);
+  const f = Math.round(currentScannedProduct.fat * mul);
+  const mealType = document.getElementById("select-meal-type")?.value || "Meal";
+
+  try {
+    const initData = tg?.initData || "";
+    const res = await fetch(`${API_BASE_URL}?api=log_barcode_meal`, {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        "Authorization": `Bearer ${initData}`,
+        "X-Telegram-Init-Data": initData
+      },
+      body: JSON.stringify({
+        food_name: currentScannedProduct.name,
+        calories: cal,
+        protein: p,
+        carbs: c,
+        fat: f,
+        meal_type: mealType,
+        barcode: currentScannedProduct.barcode
+      })
+    });
+
+    if (!res.ok) throw new Error("Failed to log barcode food");
+
+    closeProductResultModal();
+    showLoading(false);
+    showToast(`Logged ${currentScannedProduct.name} (${cal} kcal)! ✅`);
+    triggerHaptic("success");
+    fetchDashboardData();
+  } catch (err) {
+    showLoading(false);
+    console.error("Error logging barcode item:", err);
+    showToast("Failed to save food log", true);
+  }
+}
+
+/**
+ * Generate Weekly Visual Infographic Report Card via API
+ */
+async function handleGenerateWeeklyReport() {
+  showLoading(true);
+  try {
+    const initData = tg?.initData || "";
+    const res = await fetch(`${API_BASE_URL}?api=generate_weekly_report`, {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        "Authorization": `Bearer ${initData}`,
+        "X-Telegram-Init-Data": initData
+      }
+    });
+
+    showLoading(false);
+    if (res.ok) {
+      showToast("📊 7-Day Visual Report Card sent to your Telegram chat!");
+      triggerHaptic("success");
+    } else {
+      showToast("Failed to generate weekly report", true);
+    }
+  } catch (err) {
+    showLoading(false);
+    console.error("Weekly report error:", err);
+    showToast("Failed to generate report", true);
+  }
 }
 
 /**
@@ -815,7 +1316,7 @@ async function updateMacroTargets(protein, carbs, fat) {
     if (!res.ok) throw new Error("Update macros failed");
 
     appState.macroTargets = { protein, carbs, fat };
-    showToast(`Macro targets updated! 🥑`);
+    showToast("Macro targets updated! 🥑");
     triggerHaptic("success");
     renderSummaryCard();
   } catch (err) {
@@ -1034,6 +1535,12 @@ function loadMockDataForPreview() {
       { id: "p2", food_name: "Creatine Monohydrate (5g)", calories: 0, protein: 0, carbs: 0, fat: 0 },
       { id: "p3", food_name: "Black Coffee / Americano", calories: 5, protein: 0, carbs: 1, fat: 0 }
     ],
+    activeFast: {
+      id: "demo-fast",
+      start_time: new Date(Date.now() - 14.5 * 60 * 60 * 1000).toISOString(),
+      target_hours: 16,
+      status: "active"
+    },
     currentChartView: "calories",
     chartInstance: null
   };
