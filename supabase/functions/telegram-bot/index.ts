@@ -44,8 +44,8 @@ const WEBAPP_URL = "https://jasontan89.github.io/calorie-tracker-bot/";
 let commandsRegistered = false;
 
 // Helper function to register bot menu commands & Web App chat button once on startup
-async function registerBotCommandsOnce() {
-  if (commandsRegistered) return;
+async function registerBotCommandsOnce(force: boolean = false) {
+  if (commandsRegistered && !force) return;
   try {
     await bot.api.setMyCommands([
       { command: "today", description: "📅 Today's Summary & Progress" },
@@ -61,7 +61,8 @@ async function registerBotCommandsOnce() {
       { command: "reminders", description: "🔔 Toggle Daily Alerts" },
       { command: "delete", description: "🗑️ Select & Delete Today's Food" },
       { command: "target", description: "🎯 Update Calorie Goal" },
-      { command: "start", description: "👋 Welcome & Instructions" }
+      { command: "help", description: "ℹ️ Bot Commands & Instructions" },
+      { command: "start", description: "👋 Welcome & Getting Started" }
     ]);
 
     try {
@@ -406,6 +407,7 @@ bot.command("start", async (ctx) => {
   if (!userId) return;
 
   await ensureUserProfile(userId, ctx.from?.first_name, ctx.from?.username);
+  await registerBotCommandsOnce(true);
   const name = escapeMarkdown(ctx.from?.first_name ?? "there");
 
   const keyboard = new InlineKeyboard()
@@ -433,7 +435,49 @@ bot.command("start", async (ctx) => {
     `• 🏆 Use /joinleaderboard & /leaderboard in group chats!\n` +
     `• ⚖️ Use /weight <number> & /progress for weight tracking.\n` +
     `• 🗑️ Use /delete to select & delete any logged food today.\n` +
-    `• 🔔 Use /reminders for opt-in daily check-ins & weekly reviews.`,
+    `• 🔔 Use /reminders for opt-in daily check-ins & weekly reviews.\n` +
+    `• ℹ️ Use /help for a complete list of commands and instructions.`,
+    { parse_mode: "Markdown", reply_markup: keyboard }
+  );
+});
+
+bot.command("help", async (ctx) => {
+  const userId = ctx.from?.id;
+  if (!userId) return;
+
+  await ensureUserProfile(userId, ctx.from?.first_name, ctx.from?.username);
+  await registerBotCommandsOnce(true);
+
+  const keyboard = new InlineKeyboard()
+    .webApp("📱 Open Interactive Dashboard", WEBAPP_URL)
+    .row()
+    .text("⭐ View Saved Presets", "open_presets")
+    .text("🤖 AI Coach Style", "open_persona")
+    .row()
+    .text("🍲 Logging Mode", "open_mode");
+
+  await ctx.reply(
+    `📋 *Calorie Tracker Bot Commands & Help*\n\n` +
+    `👉 *Logging Food:*\n` +
+    `• 📸 *Send Photo*: Automatic AI portion, calorie & macro estimation\n` +
+    `• 🎙️ *Send Voice Note*: Speak naturally to log meals\n` +
+    `• ✍️ *Text Message*: Describe your meal in plain English\n\n` +
+    `📊 *Tracking & Reports:*\n` +
+    `• /today — 📅 Today's summary, calorie & macro progress bars\n` +
+    `• /history — 📊 7-Day interactive calorie & macro chart\n` +
+    `• /export — 📥 Download full nutrition history as a CSV file\n` +
+    `• /weight <number> — ⚖️ Record your weight in kg (e.g. \`/weight 72.5\`)\n` +
+    `• /progress — 📈 30-day weight progress chart\n\n` +
+    `⚙️ *Settings & Customization:*\n` +
+    `• /mode — 🍲 Toggle Itemized Ingredients vs. Single Combined Meal\n` +
+    `• /persona — 🤖 AI Coach Style (Sarcastic, Supportive, Drill Sergeant)\n` +
+    `• /target <number> — 🎯 Set daily calorie target (e.g. \`/target 2000\`)\n` +
+    `• /presets — ⭐ View, log & manage saved quick items & supplements\n` +
+    `• /delete — 🗑️ Select & delete meals logged today\n` +
+    `• /reminders — 🔔 Toggle daily check-in alerts & weekly reviews\n\n` +
+    `👥 *Group Chats:*\n` +
+    `• /joinleaderboard — Join chat rankings\n` +
+    `• /leaderboard — View group member consistency rankings`,
     { parse_mode: "Markdown", reply_markup: keyboard }
   );
 });
@@ -1995,6 +2039,56 @@ Deno.serve(async (req) => {
         }
         await supabase.from("user_profiles").update({ daily_target: targetVal }).eq("user_id", userId);
         return new Response(JSON.stringify({ success: true, target: targetVal }), { headers: { ...corsHeaders, "Content-Type": "application/json" } });
+      }
+
+      if (apiAction === "export_csv_to_chat" && req.method === "POST") {
+        const { data: logs, error: logErr } = await supabase
+          .from("food_logs")
+          .select("created_at, meal_type, food_name, calories, protein, carbs, fat")
+          .eq("user_id", userId)
+          .order("created_at", { ascending: false });
+
+        if (logErr || !logs || logs.length === 0) {
+          return new Response(JSON.stringify({ error: "No food logs found to export" }), {
+            status: 404,
+            headers: { ...corsHeaders, "Content-Type": "application/json" }
+          });
+        }
+
+        let csv = "Date (SGT),Time (SGT),Meal Type,Food Name,Calories (kcal),Protein (g),Carbs (g),Fat (g)\n";
+        for (const log of logs) {
+          const d = new Date(log.created_at);
+          const dateStr = getSGTDateStr(d);
+          const timeStr = new Intl.DateTimeFormat("en-SG", {
+            timeZone: "Asia/Singapore",
+            hour: "2-digit",
+            minute: "2-digit",
+            hour12: false
+          }).format(d);
+          const safeName = `"${(log.food_name || "").replace(/"/g, '""')}"`;
+          const meal = log.meal_type || "Meal";
+          csv += `${dateStr},${timeStr},${meal},${safeName},${log.calories},${log.protein || 0},${log.carbs || 0},${log.fat || 0}\n`;
+        }
+
+        const fileBytes = new TextEncoder().encode(csv);
+        const todaySgt = getSGTDateStr();
+        const inputFile = new InputFile(fileBytes, `calorie_tracker_export_${todaySgt}.csv`);
+
+        try {
+          await bot.api.sendDocument(userId, inputFile, {
+            caption: `📥 *CSV Export Complete!*\n\nHere is your full food log history (${logs.length} entries) in CSV spreadsheet format. You can open this in Excel, Google Sheets, or Numbers.`,
+            parse_mode: "Markdown"
+          });
+          return new Response(JSON.stringify({ success: true, count: logs.length }), {
+            headers: { ...corsHeaders, "Content-Type": "application/json" }
+          });
+        } catch (sendErr) {
+          console.error("Error sending CSV document to chat:", sendErr);
+          return new Response(JSON.stringify({ error: "Failed to send CSV document to chat" }), {
+            status: 500,
+            headers: { ...corsHeaders, "Content-Type": "application/json" }
+          });
+        }
       }
 
       if (apiAction === "export_all_logs" && req.method === "GET") {
