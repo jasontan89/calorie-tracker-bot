@@ -30,6 +30,7 @@ let selectedFastHours = 16;
 // Barcode Scanner state
 let html5QrCodeScanner = null;
 let isScannerActive = false;
+let isProcessingScan = false;
 let currentScannedProduct = null;
 let currentServingMultiplier = 1.0;
 
@@ -660,6 +661,7 @@ function openBarcodeScanner() {
   const modal = document.getElementById("scanner-modal");
   if (!modal) return;
   modal.style.display = "flex";
+  isProcessingScan = false;
 
   if (window.Html5Qrcode) {
     try {
@@ -670,6 +672,8 @@ function openBarcodeScanner() {
         { facingMode: "environment" },
         config,
         (decodedText) => {
+          if (isProcessingScan) return;
+          isProcessingScan = true;
           triggerHaptic("success");
           closeBarcodeScanner();
           lookupBarcodeProduct(decodedText);
@@ -944,8 +948,10 @@ function renderChart() {
               const index = elements[0].index;
               const selected = history[index];
               if (selected) {
-                selectDate(selected.date);
-                triggerHaptic("light");
+                setTimeout(() => {
+                  selectDate(selected.date);
+                  triggerHaptic("light");
+                }, 0);
               }
             }
           },
