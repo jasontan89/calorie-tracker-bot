@@ -198,6 +198,67 @@
           <button id="btn-save-target" class="btn-primary">Save Target</button>
         </div>
       </div>
+
+      <!-- Custom Macro Targets Card -->
+      <div class="card">
+        <div class="card-header">
+          <h3>🥑 Custom Macro Targets</h3>
+          <button id="btn-auto-macros" class="btn-secondary-sm" title="Reset to auto 30/40/30 ratio">⚡ Auto (30/40/30)</button>
+        </div>
+        <p class="card-subtitle">Set specific daily gram goals for protein, carbs, and fats, or use auto-balance.</p>
+        <div class="macros-input-grid">
+          <div class="macro-input-group">
+            <label for="input-target-p">🥩 Protein (g)</label>
+            <input type="number" id="input-target-p" min="0" max="500" step="5" placeholder="150">
+          </div>
+          <div class="macro-input-group">
+            <label for="input-target-c">🍚 Carbs (g)</label>
+            <input type="number" id="input-target-c" min="0" max="1000" step="5" placeholder="200">
+          </div>
+          <div class="macro-input-group">
+            <label for="input-target-f">🥑 Fats (g)</label>
+            <input type="number" id="input-target-f" min="0" max="500" step="5" placeholder="67">
+          </div>
+        </div>
+        <button id="btn-save-macros" class="btn-primary" style="margin-top: 4px;">Save Macro Goals</button>
+      </div>
+
+      <!-- Meal Logging Mode Card -->
+      <div class="card">
+        <div class="card-header">
+          <h3>🍲 Meal Logging Mode</h3>
+        </div>
+        <p class="card-subtitle">Choose how AI meal scans are recorded in your daily log.</p>
+        
+        <div class="logging-mode-options">
+          <div class="mode-card selected" data-mode="itemized" id="mode-itemized">
+            <div class="mode-radio"></div>
+            <div class="mode-body">
+              <h4>🧩 Itemized Ingredients</h4>
+              <p>Breaks meals down into separate items (e.g. Eggs, Toast, Coffee) for detailed macro accuracy and individual preset saving.</p>
+            </div>
+          </div>
+
+          <div class="mode-card" data-mode="combined" id="mode-combined">
+            <div class="mode-radio"></div>
+            <div class="mode-body">
+              <h4>🍲 Single Combined Meal</h4>
+              <p>Records the entire meal as 1 single entry with total calories & macros (e.g. Big Breakfast — 550 kcal).</p>
+            </div>
+          </div>
+        </div>
+      </div>
+
+      <!-- Data Export Card -->
+      <div class="card">
+        <div class="card-header">
+          <h3>📥 Data Export</h3>
+        </div>
+        <p class="card-subtitle">Download your complete nutrition history as a CSV file to open in Microsoft Excel, Apple Numbers, or Google Sheets.</p>
+        <button id="btn-export-csv" class="btn-outline">
+          <span>📊</span> Download Complete History (CSV)
+        </button>
+      </div>
     </section>
 
     <!-- Toast Notification Popup -->
