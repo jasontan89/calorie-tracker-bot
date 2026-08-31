@@ -2180,10 +2180,12 @@ const telegramSecretToken = Deno.env.get("TELEGRAM_SECRET_TOKEN");
 const cronSecret = Deno.env.get("CRON_SECRET");
 
 Deno.serve(async (req) => {
+  const requestOrigin = req.headers.get("origin") || "*";
   const corsHeaders = {
-    "Access-Control-Allow-Origin": "https://jasontan89.github.io",
+    "Access-Control-Allow-Origin": requestOrigin === "null" ? "*" : requestOrigin,
     "Access-Control-Allow-Methods": "GET, POST, OPTIONS",
-    "Access-Control-Allow-Headers": "Authorization, Content-Type, X-Telegram-Init-Data, Accept",
+    "Access-Control-Allow-Headers": "Authorization, Content-Type, X-Telegram-Init-Data, Accept, apikey, x-client-info",
+    "Access-Control-Max-Age": "86400",
   };
 
   if (req.method === "OPTIONS") {
@@ -2196,6 +2198,21 @@ Deno.serve(async (req) => {
 
     // ── Web App REST API Router ───────────────────────────────────────────────
     if (apiAction) {
+      if (apiAction === "lookup_barcode") {
+        const barcode = url.searchParams.get("barcode") || (await req.json().catch(() => ({})))?.barcode;
+        if (!barcode) {
+          return new Response(JSON.stringify({ error: "Missing barcode" }), { status: 400, headers: { ...corsHeaders, "Content-Type": "application/json" } });
+        }
+        const product = await fetchOpenFoodFacts(barcode);
+        if (!product) {
+          return new Response(JSON.stringify({ error: "Product not found on Open Food Facts" }), { status: 404, headers: { ...corsHeaders, "Content-Type": "application/json" } });
+        }
+        return new Response(JSON.stringify({ success: true, product }), {
+          status: 200,
+          headers: { ...corsHeaders, "Content-Type": "application/json" }
+        });
+      }
+
       const authHeader = req.headers.get("authorization") || "";
       const customHeader = req.headers.get("x-telegram-init-data") || "";
       const queryInitData = url.searchParams.get("initData") || "";
@@ -2623,6 +2640,18 @@ Deno.serve(async (req) => {
       if (incomingSecret !== telegramSecretToken) {
         return new Response("Unauthorized webhook request", { status: 401 });
       }
+    }
+
+    // Return health check for GET requests
+    if (req.method === "GET") {
+      return new Response(JSON.stringify({
+        status: "ok",
+        service: "Telegram Calorie Tracker Bot",
+        version: "3.5",
+        time: new Date().toISOString()
+      }), {
+        headers: { ...corsHeaders, "Content-Type": "application/json" }
+      });
     }
 
     // Register bot commands & Chat Menu Button once on startup
