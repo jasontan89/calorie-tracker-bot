@@ -852,13 +852,34 @@ async function resetToAutoMacros() {
 }
 
 /**
- * Export Food Logs to CSV and Download in Browser
+ * Export Food Logs to CSV (Delivers directly to Telegram Chat or Downloads in Browser)
  */
 async function exportFoodLogsCSV() {
   showLoading(true);
   try {
-    let logs = [];
     const initData = tg?.initData || "";
+
+    // 1. If inside Telegram WebApp with initData, trigger backend to send document into Telegram chat!
+    if (initData) {
+      const res = await fetch(`${API_BASE_URL}?api=export_csv_to_chat`, {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          "Authorization": `Bearer ${initData}`,
+          "X-Telegram-Init-Data": initData
+        }
+      });
+
+      if (res.ok) {
+        showLoading(false);
+        showToast("📥 CSV Export sent directly to your Telegram chat!");
+        triggerHaptic("success");
+        return;
+      }
+    }
+
+    // 2. Fallback: Browser download (for preview mode or browser testing)
+    let logs = [];
     if (initData) {
       const res = await fetch(`${API_BASE_URL}?api=export_all_logs`, {
         method: "GET",
@@ -918,7 +939,7 @@ async function exportFoodLogsCSV() {
   } catch (err) {
     showLoading(false);
     console.error("Export error:", err);
-    showToast("Failed to generate CSV export", true);
+    showToast("Failed to export CSV", true);
   }
 }
 
