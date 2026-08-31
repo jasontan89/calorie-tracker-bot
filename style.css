@@ -810,3 +810,403 @@ body {
   from { opacity: 0; transform: translateY(4px); }
   to { opacity: 1; transform: translateY(0); }
 }
+
+
+/* ── Action Banner (Barcode Scan) ─────────────────────────────────────────── */
+.quick-actions-row {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.btn-action-banner {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  background: linear-gradient(135deg, rgba(16, 185, 129, 0.2), rgba(59, 130, 246, 0.2));
+  border: 1px solid rgba(16, 185, 129, 0.4);
+  border-radius: var(--radius-md);
+  padding: 12px 14px;
+  color: var(--text-color);
+  cursor: pointer;
+  text-align: left;
+  transition: all 0.2s ease;
+  width: 100%;
+}
+
+.btn-action-banner:active {
+  transform: scale(0.98);
+  background: linear-gradient(135deg, rgba(16, 185, 129, 0.3), rgba(59, 130, 246, 0.3));
+}
+
+.action-icon {
+  font-size: 24px;
+  flex-shrink: 0;
+}
+
+.action-text {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+
+.action-text strong {
+  font-size: 14px;
+  font-weight: 700;
+  color: #fff;
+}
+
+.action-text span {
+  font-size: 11px;
+  color: var(--hint-color);
+}
+
+.action-arrow {
+  font-size: 16px;
+  color: var(--primary-accent);
+}
+
+/* ── Fasting Card ──────────────────────────────────────────────────────────── */
+.fasting-card {
+  position: relative;
+  overflow: hidden;
+}
+
+.fasting-timer-container {
+  display: flex;
+  align-items: center;
+  gap: 18px;
+  padding: 6px 0;
+}
+
+.fasting-circle-wrap {
+  position: relative;
+  width: 100px;
+  height: 100px;
+  flex-shrink: 0;
+}
+
+.fasting-ring {
+  width: 100%;
+  height: 100%;
+  transform: rotate(-90deg);
+}
+
+.fasting-ring-bg {
+  fill: none;
+  stroke: rgba(255, 255, 255, 0.08);
+  stroke-width: 8;
+}
+
+.fasting-ring-fill {
+  fill: none;
+  stroke: var(--primary-accent);
+  stroke-width: 8;
+  stroke-linecap: round;
+  stroke-dasharray: 326.7;
+  stroke-dashoffset: 326.7;
+  transition: stroke-dashoffset 0.8s ease, stroke 0.3s ease;
+}
+
+.fasting-circle-text {
+  position: absolute;
+  top: 0;
+  left: 0;
+  width: 100%;
+  height: 100%;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  text-align: center;
+}
+
+.fasting-elapsed {
+  font-size: 15px;
+  font-weight: 800;
+  color: #fff;
+  line-height: 1.1;
+}
+
+.fasting-pct {
+  font-size: 11px;
+  font-weight: 600;
+  color: var(--hint-color);
+}
+
+.fasting-info {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.fasting-goal-text {
+  font-size: 14px;
+  font-weight: 700;
+  color: #fff;
+}
+
+.fasting-finish-text {
+  font-size: 12px;
+  color: var(--hint-color);
+}
+
+.fasting-actions {
+  display: flex;
+  gap: 8px;
+  margin-top: 4px;
+}
+
+.fasting-presets-grid {
+  display: grid;
+  grid-template-columns: repeat(5, 1fr);
+  gap: 6px;
+  margin-top: 6px;
+}
+
+.btn-fast-preset {
+  background: var(--bg-color);
+  border: 1px solid var(--card-border);
+  border-radius: var(--radius-sm);
+  padding: 8px 4px;
+  color: var(--text-color);
+  cursor: pointer;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 2px;
+  transition: all 0.2s ease;
+}
+
+.btn-fast-preset strong {
+  font-size: 13px;
+  font-weight: 700;
+}
+
+.btn-fast-preset span {
+  font-size: 10px;
+  color: var(--hint-color);
+}
+
+.btn-fast-preset.active {
+  border-color: var(--primary-accent);
+  background: rgba(16, 185, 129, 0.15);
+  color: var(--primary-accent);
+}
+
+.btn-fast-preset.active span {
+  color: var(--primary-accent);
+}
+
+.btn-ghost {
+  background: transparent;
+  border: 1px solid var(--card-border);
+  color: var(--hint-color);
+  padding: 4px 8px;
+  border-radius: 4px;
+  font-size: 11px;
+  cursor: pointer;
+}
+
+/* ── Modals & Overlays ─────────────────────────────────────────────────────── */
+.modal-overlay {
+  position: fixed;
+  top: 0;
+  left: 0;
+  right: 0;
+  bottom: 0;
+  background: rgba(0, 0, 0, 0.82);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 16px;
+  z-index: 999;
+  backdrop-filter: blur(4px);
+  animation: fadeIn 0.2s ease;
+}
+
+.modal-content {
+  background: var(--secondary-bg-color);
+  border: 1px solid var(--card-border);
+  border-radius: var(--radius-lg);
+  width: 100%;
+  max-width: 440px;
+  padding: 18px;
+  box-shadow: 0 10px 30px rgba(0, 0, 0, 0.5);
+  max-height: 90vh;
+  overflow-y: auto;
+}
+
+.modal-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  margin-bottom: 12px;
+}
+
+.modal-header h3 {
+  font-size: 16px;
+  font-weight: 700;
+}
+
+.btn-icon-close {
+  background: transparent;
+  border: none;
+  color: var(--hint-color);
+  font-size: 18px;
+  cursor: pointer;
+  padding: 4px 8px;
+  border-radius: 50%;
+}
+
+.scanner-hint {
+  font-size: 12px;
+  color: var(--hint-color);
+  margin-bottom: 10px;
+}
+
+.scanner-viewfinder {
+  width: 100%;
+  min-height: 250px;
+  border-radius: var(--radius-md);
+  overflow: hidden;
+  background: #000;
+  border: 2px solid rgba(16, 185, 129, 0.4);
+}
+
+.scanner-manual-row {
+  display: flex;
+  gap: 8px;
+  margin-top: 12px;
+}
+
+.scanner-manual-row input {
+  flex: 1;
+  background: var(--bg-color);
+  border: 1px solid var(--card-border);
+  color: var(--text-color);
+  padding: 8px 12px;
+  border-radius: var(--radius-sm);
+  font-size: 13px;
+}
+
+/* ── Barcode Product Card in Result Modal ─────────────────────────────────── */
+.barcode-product-card {
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+}
+
+.product-header {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+}
+
+.product-thumb {
+  width: 54px;
+  height: 54px;
+  border-radius: var(--radius-sm);
+  background: var(--bg-color);
+  border: 1px solid var(--card-border);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 26px;
+  overflow: hidden;
+  flex-shrink: 0;
+}
+
+.product-thumb img {
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+}
+
+.product-info h4 {
+  font-size: 15px;
+  font-weight: 700;
+  line-height: 1.2;
+}
+
+.product-serving {
+  font-size: 11px;
+  color: var(--hint-color);
+}
+
+.product-nutrition-grid {
+  display: grid;
+  grid-template-columns: repeat(4, 1fr);
+  gap: 6px;
+  background: var(--bg-color);
+  padding: 10px;
+  border-radius: var(--radius-md);
+  border: 1px solid var(--card-border);
+  text-align: center;
+}
+
+.product-nutri-item {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+
+.nutri-label {
+  font-size: 10px;
+  color: var(--hint-color);
+  text-transform: uppercase;
+}
+
+.nutri-val {
+  font-size: 13px;
+  font-weight: 700;
+  color: #fff;
+}
+
+.portion-selector-row, .meal-type-selector-row {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.portion-selector-row label, .meal-type-selector-row label {
+  font-size: 12px;
+  font-weight: 600;
+  color: var(--hint-color);
+}
+
+.portion-pills {
+  display: flex;
+  gap: 6px;
+}
+
+.portion-pill {
+  flex: 1;
+  background: var(--bg-color);
+  border: 1px solid var(--card-border);
+  color: var(--text-color);
+  padding: 6px 0;
+  border-radius: var(--radius-sm);
+  font-size: 12px;
+  font-weight: 600;
+  cursor: pointer;
+  transition: all 0.2s ease;
+}
+
+.portion-pill.active {
+  background: var(--primary-accent);
+  color: #fff;
+  border-color: var(--primary-accent);
+}
+
+.custom-select {
+  background: var(--bg-color);
+  border: 1px solid var(--card-border);
+  color: var(--text-color);
+  padding: 8px 12px;
+  border-radius: var(--radius-sm);
+  font-size: 13px;
+  width: 100%;
+}

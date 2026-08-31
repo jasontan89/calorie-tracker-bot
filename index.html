@@ -9,6 +9,8 @@
   <script src="https://telegram.org/js/telegram-web-app.js"></script>
   <!-- Chart.js CDN -->
   <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.1/dist/chart.umd.min.js"></script>
+  <!-- HTML5 QR / Barcode Scanner CDN -->
+  <script src="https://unpkg.com/html5-qrcode@2.3.8/html5-qrcode.min.js"></script>
 </head>
 <body>
   <div id="app" class="app-container">
@@ -61,6 +63,18 @@
 
     <!-- TAB 1: DASHBOARD -->
     <section id="tab-dashboard" class="tab-content active">
+      <!-- Quick Action: Barcode Scanner Button -->
+      <div class="quick-actions-row">
+        <button id="btn-open-scanner" class="btn-action-banner">
+          <span class="action-icon">📸</span>
+          <div class="action-text">
+            <strong>Scan Food Barcode</strong>
+            <span>Instant nutrition lookup via Open Food Facts</span>
+          </div>
+          <span class="action-arrow">➔</span>
+        </button>
+      </div>
+
       <!-- Today's Calorie & Macro Card -->
       <div class="card summary-card">
         <div class="card-header">
@@ -109,6 +123,51 @@
         </div>
       </div>
 
+      <!-- Intermittent Fasting Card -->
+      <div class="card fasting-card" id="fasting-card">
+        <div class="card-header">
+          <h3>⏰ Intermittent Fasting</h3>
+          <span class="badge" id="fasting-status-badge">Not Fasting</span>
+        </div>
+        
+        <!-- Active Fasting State -->
+        <div id="fasting-active-view" style="display: none;">
+          <div class="fasting-timer-container">
+            <div class="fasting-circle-wrap">
+              <svg class="fasting-ring" viewBox="0 0 120 120">
+                <circle class="fasting-ring-bg" cx="60" cy="60" r="52"></circle>
+                <circle class="fasting-ring-fill" id="fasting-ring-circle" cx="60" cy="60" r="52"></circle>
+              </svg>
+              <div class="fasting-circle-text">
+                <div class="fasting-elapsed" id="fasting-elapsed-time">0h 0m</div>
+                <div class="fasting-pct" id="fasting-pct-text">0%</div>
+              </div>
+            </div>
+            <div class="fasting-info">
+              <div class="fasting-goal-text" id="fasting-goal-text">Target: 16 Hours</div>
+              <div class="fasting-finish-text" id="fasting-finish-text">End: Calculating...</div>
+              <div class="fasting-actions">
+                <button id="btn-stop-fast" class="btn-sm btn-danger">🛑 End Fast</button>
+                <button id="btn-cancel-fast" class="btn-sm btn-ghost">Cancel</button>
+              </div>
+            </div>
+          </div>
+        </div>
+
+        <!-- Inactive Fasting State / Presets -->
+        <div id="fasting-idle-view">
+          <p class="card-subtitle">Select a protocol to start your countdown timer:</p>
+          <div class="fasting-presets-grid">
+            <button class="btn-fast-preset" data-hours="14"><strong>14:10</strong><span>14 hrs</span></button>
+            <button class="btn-fast-preset active" data-hours="16"><strong>16:8</strong><span>16 hrs</span></button>
+            <button class="btn-fast-preset" data-hours="18"><strong>18:6</strong><span>18 hrs</span></button>
+            <button class="btn-fast-preset" data-hours="20"><strong>20:4</strong><span>20 hrs</span></button>
+            <button class="btn-fast-preset" data-hours="24"><strong>OMAD</strong><span>24 hrs</span></button>
+          </div>
+          <button id="btn-start-fast" class="btn-primary" style="margin-top: 10px; width: 100%;">⏰ Start 16h Fast</button>
+        </div>
+      </div>
+
       <!-- Interactive 7-Day Chart Card -->
       <div class="card chart-card">
         <div class="card-header">
@@ -153,8 +212,20 @@
       </div>
     </section>
 
-    <!-- TAB 3: SETTINGS & AI COACH -->
+    <!-- TAB 3: SETTINGS -->
     <section id="tab-settings" class="tab-content">
+      <!-- Weekly Visual Infographic Report Card -->
+      <div class="card">
+        <div class="card-header">
+          <h3>📑 Weekly Nutrition Report Card</h3>
+        </div>
+        <p class="card-subtitle">Generate a 7-day visual infographic chart, macro distribution breakdown, and AI coach grade delivered right to your Telegram chat!</p>
+        <button id="btn-generate-weekly-report" class="btn-outline">
+          <span>📊</span> Send Weekly Report Card to Chat
+        </button>
+      </div>
+
+      <!-- AI Coach Style Card -->
       <div class="card">
         <div class="card-header">
           <h3>🤖 AI Nutrition Coach Style</h3>
@@ -188,6 +259,7 @@
         </div>
       </div>
 
+      <!-- Daily Target Goal Card -->
       <div class="card">
         <div class="card-header">
           <h3>🎯 Daily Calorie Target</h3>
@@ -254,12 +326,90 @@
         <div class="card-header">
           <h3>📥 Data Export</h3>
         </div>
-        <p class="card-subtitle">Export your complete nutrition history as a CSV file. Tapping below will immediately generate and send the spreadsheet to your Telegram chat!</p>
+        <p class="card-subtitle">Export your complete nutrition history as a CSV spreadsheet sent directly to your Telegram chat!</p>
         <button id="btn-export-csv" class="btn-outline">
           <span>📊</span> Send CSV Export to Telegram Chat
         </button>
       </div>
     </section>
+
+    <!-- Barcode Scanner Modal Viewfinder -->
+    <div id="scanner-modal" class="modal-overlay" style="display: none;">
+      <div class="modal-content scanner-modal-content">
+        <div class="modal-header">
+          <h3>📸 Scan Food Barcode</h3>
+          <button id="btn-close-scanner" class="btn-icon-close">✕</button>
+        </div>
+        <p class="scanner-hint">Point your camera at any food product barcode (UPC / EAN)</p>
+        <div id="scanner-reader" class="scanner-viewfinder"></div>
+        <div class="scanner-manual-row">
+          <input type="text" id="input-manual-barcode" placeholder="Or enter barcode numbers..." inputmode="numeric">
+          <button id="btn-search-barcode" class="btn-primary-sm">Search</button>
+        </div>
+      </div>
+    </div>
+
+    <!-- Barcode Product Confirmation Modal -->
+    <div id="barcode-result-modal" class="modal-overlay" style="display: none;">
+      <div class="modal-content">
+        <div class="modal-header">
+          <h3>📦 Barcode Item Found</h3>
+          <button id="btn-close-result-modal" class="btn-icon-close">✕</button>
+        </div>
+        <div class="barcode-product-card">
+          <div class="product-header">
+            <div class="product-thumb" id="product-img-wrap">🥫</div>
+            <div class="product-info">
+              <h4 id="product-name">Product Name</h4>
+              <span class="product-serving" id="product-serving-label">1 serving (100g)</span>
+            </div>
+          </div>
+
+          <div class="product-nutrition-grid">
+            <div class="product-nutri-item">
+              <span class="nutri-label">Calories</span>
+              <strong class="nutri-val" id="product-cal-val">0 kcal</strong>
+            </div>
+            <div class="product-nutri-item">
+              <span class="nutri-label">Protein</span>
+              <strong class="nutri-val" id="product-p-val">0g</strong>
+            </div>
+            <div class="product-nutri-item">
+              <span class="nutri-label">Carbs</span>
+              <strong class="nutri-val" id="product-c-val">0g</strong>
+            </div>
+            <div class="product-nutri-item">
+              <span class="nutri-label">Fat</span>
+              <strong class="nutri-val" id="product-f-val">0g</strong>
+            </div>
+          </div>
+
+          <div class="portion-selector-row">
+            <label>Serving Multiplier:</label>
+            <div class="portion-pills">
+              <button class="portion-pill" data-mul="0.5">0.5x</button>
+              <button class="portion-pill active" data-mul="1.0">1.0x</button>
+              <button class="portion-pill" data-mul="1.5">1.5x</button>
+              <button class="portion-pill" data-mul="2.0">2.0x</button>
+            </div>
+          </div>
+
+          <div class="meal-type-selector-row">
+            <label for="select-meal-type">Meal Category:</label>
+            <select id="select-meal-type" class="custom-select">
+              <option value="Breakfast">🌅 Breakfast</option>
+              <option value="Lunch">☀️ Lunch</option>
+              <option value="Dinner">🌙 Dinner</option>
+              <option value="Snack">🍿 Snack</option>
+            </select>
+          </div>
+
+          <button id="btn-log-barcode-item" class="btn-primary" style="width: 100%; margin-top: 14px;">
+            ✅ Log to Today's Diary
+          </button>
+        </div>
+      </div>
+    </div>
 
     <!-- Toast Notification Popup -->
     <div id="toast" class="toast">Action completed</div>
