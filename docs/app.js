@@ -82,7 +82,7 @@ function setupEventListeners() {
   });
 
   // Chart View Toggle (Calories vs Macros)
-  document.getElementById("btn-chart-cal").addEventListener("click", () => {
+  document.getElementById("btn-chart-cal")?.addEventListener("click", () => {
     appState.currentChartView = "calories";
     document.getElementById("btn-chart-cal").classList.add("active");
     document.getElementById("btn-chart-macros").classList.remove("active");
@@ -90,7 +90,7 @@ function setupEventListeners() {
     triggerHaptic("light");
   });
 
-  document.getElementById("btn-chart-macros").addEventListener("click", () => {
+  document.getElementById("btn-chart-macros")?.addEventListener("click", () => {
     appState.currentChartView = "macros";
     document.getElementById("btn-chart-macros").classList.add("active");
     document.getElementById("btn-chart-cal").classList.remove("active");
@@ -107,8 +107,17 @@ function setupEventListeners() {
     });
   });
 
+  // Logging Mode Selection Cards
+  document.querySelectorAll(".mode-card").forEach((card) => {
+    card.addEventListener("click", () => {
+      const mode = card.getAttribute("data-mode");
+      updateLoggingMode(mode);
+      triggerHaptic("medium");
+    });
+  });
+
   // Target Goal Save Button
-  document.getElementById("btn-save-target").addEventListener("click", () => {
+  document.getElementById("btn-save-target")?.addEventListener("click", () => {
     const input = document.getElementById("input-daily-target");
     const val = parseInt(input.value, 10);
     if (!val || val <= 0) {
@@ -119,8 +128,34 @@ function setupEventListeners() {
     triggerHaptic("medium");
   });
 
+  // Custom Macro Targets Save Button
+  document.getElementById("btn-save-macros")?.addEventListener("click", () => {
+    const p = parseInt(document.getElementById("input-target-p")?.value, 10);
+    const c = parseInt(document.getElementById("input-target-c")?.value, 10);
+    const f = parseInt(document.getElementById("input-target-f")?.value, 10);
+
+    if (isNaN(p) || isNaN(c) || isNaN(f) || p < 0 || c < 0 || f < 0) {
+      showToast("Please enter valid positive numbers for macros", true);
+      return;
+    }
+    updateMacroTargets(p, c, f);
+    triggerHaptic("medium");
+  });
+
+  // Auto-calculate Macros Button
+  document.getElementById("btn-auto-macros")?.addEventListener("click", () => {
+    resetToAutoMacros();
+    triggerHaptic("light");
+  });
+
+  // CSV Export Button
+  document.getElementById("btn-export-csv")?.addEventListener("click", () => {
+    exportFoodLogsCSV();
+    triggerHaptic("medium");
+  });
+
   // Retry Button
-  document.getElementById("retry-btn").addEventListener("click", () => {
+  document.getElementById("retry-btn")?.addEventListener("click", () => {
     document.getElementById("error-banner").style.display = "none";
     fetchDashboardData();
   });
@@ -393,6 +428,7 @@ function renderChart() {
  */
 function renderDatePills() {
   const container = document.getElementById("date-pills-container");
+  if (!container) return;
   container.innerHTML = "";
 
   const history = appState.history7d || [];
@@ -423,6 +459,7 @@ function selectDate(dateStr) {
  */
 function renderMealsList() {
   const container = document.getElementById("meals-list");
+  if (!container) return;
   const isToday = appState.selectedDate === appState.todayDate;
   
   document.getElementById("meals-card-title").textContent = isToday 
@@ -480,7 +517,6 @@ function renderMealsList() {
 async function confirmAndDeleteMeal(logId, foodName) {
   const proceed = async () => {
     triggerHaptic("warning");
-    // Optimistic UI Removal
     const elem = document.getElementById(`meal-log-${logId}`);
     if (elem) elem.style.opacity = "0.3";
 
@@ -500,7 +536,6 @@ async function confirmAndDeleteMeal(logId, foodName) {
 
       showToast(`Deleted ${foodName}`);
       triggerHaptic("success");
-      // Refresh dashboard data
       fetchDashboardData();
     } catch (err) {
       console.error("Error deleting meal:", err);
@@ -523,6 +558,7 @@ async function confirmAndDeleteMeal(logId, foodName) {
  */
 function renderPresetsList() {
   const container = document.getElementById("presets-list");
+  if (!container) return;
   container.innerHTML = "";
 
   const presets = appState.presets || [];
@@ -631,9 +667,10 @@ async function deletePreset(presetId, foodName) {
 }
 
 /**
- * Render Settings & AI Coach View
+ * Render Settings, AI Coach, Macros & Logging Mode View
  */
 function renderSettingsView() {
+  // AI Coach Persona
   const persona = appState.profile?.persona || "sarcastic";
   document.querySelectorAll(".persona-card").forEach((card) => {
     const p = card.getAttribute("data-persona");
@@ -644,15 +681,36 @@ function renderSettingsView() {
     }
   });
 
+  // Logging Mode
+  const mode = appState.profile?.logging_mode || "itemized";
+  document.querySelectorAll(".mode-card").forEach((card) => {
+    const m = card.getAttribute("data-mode");
+    if (m === mode) {
+      card.classList.add("selected");
+    } else {
+      card.classList.remove("selected");
+    }
+  });
+
+  // Calorie Target
   const target = appState.profile?.daily_target || 2000;
-  document.getElementById("input-daily-target").value = target;
+  const targetInput = document.getElementById("input-daily-target");
+  if (targetInput) targetInput.value = target;
+
+  // Macro Targets
+  const pInput = document.getElementById("input-target-p");
+  const cInput = document.getElementById("input-target-c");
+  const fInput = document.getElementById("input-target-f");
+
+  if (pInput) pInput.value = appState.macroTargets.protein || 150;
+  if (cInput) cInput.value = appState.macroTargets.carbs || 200;
+  if (fInput) fInput.value = appState.macroTargets.fat || 67;
 }
 
 /**
  * Update AI Persona via API
  */
 async function updatePersona(newPersona) {
-  // Optimistic UI
   document.querySelectorAll(".persona-card").forEach((c) => c.classList.remove("selected"));
   document.getElementById(`persona-${newPersona}`)?.classList.add("selected");
 
@@ -671,11 +729,42 @@ async function updatePersona(newPersona) {
     if (!res.ok) throw new Error("Update persona failed");
 
     if (appState.profile) appState.profile.persona = newPersona;
-    showToast(`Coach style updated! 🤖`);
+    showToast("Coach style updated! 🤖");
     triggerHaptic("success");
   } catch (err) {
     console.error("Error updating persona:", err);
     showToast("Failed to update AI coach", true);
+  }
+}
+
+/**
+ * Update Meal Logging Mode via API
+ */
+async function updateLoggingMode(newMode) {
+  document.querySelectorAll(".mode-card").forEach((c) => c.classList.remove("selected"));
+  document.getElementById(`mode-${newMode}`)?.classList.add("selected");
+
+  try {
+    const initData = tg?.initData || "";
+    const res = await fetch(`${API_BASE_URL}?api=update_logging_mode`, {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        "Authorization": `Bearer ${initData}`,
+        "X-Telegram-Init-Data": initData
+      },
+      body: JSON.stringify({ mode: newMode })
+    });
+
+    if (!res.ok) throw new Error("Update logging mode failed");
+
+    if (appState.profile) appState.profile.logging_mode = newMode;
+    const modeLabel = newMode === "combined" ? "Single Combined Meal" : "Itemized Ingredients";
+    showToast(`Logging mode set to ${modeLabel}! 🍲`);
+    triggerHaptic("success");
+  } catch (err) {
+    console.error("Error updating logging mode:", err);
+    showToast("Failed to update logging mode", true);
   }
 }
 
@@ -708,6 +797,132 @@ async function updateCalorieTarget(newTarget) {
 }
 
 /**
+ * Update Custom Macro Targets via API
+ */
+async function updateMacroTargets(protein, carbs, fat) {
+  try {
+    const initData = tg?.initData || "";
+    const res = await fetch(`${API_BASE_URL}?api=update_macros`, {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        "Authorization": `Bearer ${initData}`,
+        "X-Telegram-Init-Data": initData
+      },
+      body: JSON.stringify({ protein, carbs, fat })
+    });
+
+    if (!res.ok) throw new Error("Update macros failed");
+
+    appState.macroTargets = { protein, carbs, fat };
+    showToast(`Macro targets updated! 🥑`);
+    triggerHaptic("success");
+    renderSummaryCard();
+  } catch (err) {
+    console.error("Error updating macros:", err);
+    showToast("Failed to update macros", true);
+  }
+}
+
+/**
+ * Reset Macro Targets to Auto (30/40/30) via API
+ */
+async function resetToAutoMacros() {
+  try {
+    const initData = tg?.initData || "";
+    const res = await fetch(`${API_BASE_URL}?api=update_macros`, {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        "Authorization": `Bearer ${initData}`,
+        "X-Telegram-Init-Data": initData
+      },
+      body: JSON.stringify({ is_auto: true })
+    });
+
+    if (!res.ok) throw new Error("Reset macros failed");
+
+    showToast("Macro targets reset to Auto 30/40/30! ⚡");
+    triggerHaptic("success");
+    fetchDashboardData();
+  } catch (err) {
+    console.error("Error resetting macros:", err);
+    showToast("Failed to reset macros", true);
+  }
+}
+
+/**
+ * Export Food Logs to CSV and Download in Browser
+ */
+async function exportFoodLogsCSV() {
+  showLoading(true);
+  try {
+    let logs = [];
+    const initData = tg?.initData || "";
+    if (initData) {
+      const res = await fetch(`${API_BASE_URL}?api=export_all_logs`, {
+        method: "GET",
+        headers: {
+          "Authorization": `Bearer ${initData}`,
+          "X-Telegram-Init-Data": initData
+        }
+      });
+      if (res.ok) {
+        const data = await res.json();
+        logs = data.logs || [];
+      }
+    }
+
+    // Fallback to locally loaded history if API empty or in preview
+    if (logs.length === 0) {
+      logs = appState.todayLogs || [];
+      (appState.history7d || []).forEach(day => {
+        if (day.logs && day.logs.length > 0) {
+          logs = logs.concat(day.logs);
+        }
+      });
+    }
+
+    if (logs.length === 0) {
+      showLoading(false);
+      showToast("No food logs found to export", true);
+      return;
+    }
+
+    // Deduplicate logs if any
+    const uniqueMap = new Map();
+    logs.forEach(l => { if (l.id) uniqueMap.set(l.id, l); });
+    const exportList = uniqueMap.size > 0 ? Array.from(uniqueMap.values()) : logs;
+
+    let csv = "Date (SGT),Meal Type,Food Name,Calories (kcal),Protein (g),Carbs (g),Fat (g)\n";
+    exportList.forEach(item => {
+      const created = item.created_at ? new Date(item.created_at).toLocaleString("en-SG", { timeZone: "Asia/Singapore" }) : appState.todayDate;
+      const meal = item.meal_type || "Meal";
+      const name = `"${(item.food_name || "").replace(/"/g, '""')}"`;
+      csv += `${created},${meal},${name},${item.calories || 0},${item.protein || 0},${item.carbs || 0},${item.fat || 0}\n`;
+    });
+
+    const blob = new Blob([csv], { type: "text/csv;charset=utf-8;" });
+    const url = URL.createObjectURL(blob);
+    const downloadLink = document.createElement("a");
+    downloadLink.href = url;
+    downloadLink.setAttribute("download", `calorie_tracker_export_${appState.todayDate || "data"}.csv`);
+    document.body.appendChild(downloadLink);
+    downloadLink.click();
+    document.body.removeChild(downloadLink);
+    URL.revokeObjectURL(url);
+
+    showLoading(false);
+    showToast(`Exported ${exportList.length} logs as CSV! 📥`);
+    triggerHaptic("success");
+  } catch (err) {
+    showLoading(false);
+    console.error("Export error:", err);
+    showToast("Failed to generate CSV export", true);
+  }
+}
+
+/**
  * Utility: Telegram Haptic Feedback
  */
 function triggerHaptic(type) {
@@ -727,6 +942,7 @@ function triggerHaptic(type) {
  */
 function showToast(msg, isError = false) {
   const toast = document.getElementById("toast");
+  if (!toast) return;
   toast.textContent = msg;
   toast.className = `toast show ${isError ? "toast-error" : ""}`;
   setTimeout(() => {
@@ -739,6 +955,7 @@ function showToast(msg, isError = false) {
  */
 function showLoading(show) {
   const overlay = document.getElementById("loading-spinner");
+  if (!overlay) return;
   if (show) {
     overlay.classList.remove("hidden");
   } else {
@@ -769,7 +986,8 @@ function loadMockDataForPreview() {
       first_name: "Demo User",
       daily_target: 2000,
       streak_count: 5,
-      persona: "sarcastic"
+      persona: "sarcastic",
+      logging_mode: "itemized"
     },
     todayDate: today,
     selectedDate: today,
