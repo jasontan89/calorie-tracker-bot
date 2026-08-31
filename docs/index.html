@@ -4,13 +4,9 @@
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
   <title>Calorie Tracker Dashboard</title>
-  <link rel="stylesheet" href="style.css">
-  <!-- Telegram Web App SDK -->
+  <link rel="stylesheet" href="style.css?v=20260831_1935">
+  <!-- Telegram Web App SDK in head for early context -->
   <script src="https://telegram.org/js/telegram-web-app.js"></script>
-  <!-- Chart.js CDN -->
-  <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.1/dist/chart.umd.min.js"></script>
-  <!-- HTML5 QR / Barcode Scanner CDN -->
-  <script src="https://unpkg.com/html5-qrcode@2.3.8/html5-qrcode.min.js"></script>
 </head>
 <body>
   <div id="app" class="app-container">
@@ -415,6 +411,9 @@
     <div id="toast" class="toast">Action completed</div>
   </div>
 
-  <script src="app.js"></script>
+  <!-- Deferred Scripts at End of Body (Non-blocking) -->
+  <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.1/dist/chart.umd.min.js"></script>
+  <script src="https://unpkg.com/html5-qrcode@2.3.8/html5-qrcode.min.js" defer></script>
+  <script src="app.js?v=20260831_1935"></script>
 </body>
 </html>

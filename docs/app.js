@@ -19,7 +19,7 @@ let appState = {
   presets: [],
   activeFast: null,
   recentFasts: [],
-  currentChartView: "calories", // "calories" or "macros"
+  currentChartView: "calories",
   chartInstance: null
 };
 
@@ -36,9 +36,29 @@ let currentServingMultiplier = 1.0;
 // Telegram WebApp Object Reference
 const tg = window.Telegram?.WebApp;
 
-// Helper function to build headers with Supabase apikey and Telegram initData
+/**
+ * Robust initData extraction: reads from Telegram SDK or directly from location hash (#tgWebAppData=...)
+ */
+function getTelegramInitData() {
+  if (tg?.initData) {
+    return tg.initData;
+  }
+  try {
+    const hash = window.location.hash.substring(1);
+    if (hash) {
+      const p = new URLSearchParams(hash);
+      const tgData = p.get("tgWebAppData");
+      if (tgData) return tgData;
+    }
+  } catch (e) {}
+  return "";
+}
+
+/**
+ * Build request headers with Supabase apikey and Telegram initData
+ */
 function getApiHeaders(customHeaders = {}) {
-  const initData = tg?.initData || "";
+  const initData = getTelegramInitData();
   const headers = {
     "Content-Type": "application/json",
     "apikey": SUPABASE_ANON_KEY,
@@ -289,14 +309,15 @@ function switchTab(tabId) {
 async function fetchDashboardData() {
   showLoading(true);
 
-  // 8-second safety timeout controller
+  // 6-second safety timeout controller
   const controller = new AbortController();
-  const timeoutId = setTimeout(() => controller.abort(), 8000);
+  const timeoutId = setTimeout(() => controller.abort(), 6000);
 
   try {
+    const headers = getApiHeaders();
     const response = await fetch(`${API_BASE_URL}?api=dashboard`, {
       method: "GET",
-      headers: getApiHeaders(),
+      headers: headers,
       signal: controller.signal
     });
 
@@ -315,22 +336,27 @@ async function fetchDashboardData() {
 
     renderAllViews();
     showLoading(false);
+
+    const errorBanner = document.getElementById("error-banner");
+    if (errorBanner) errorBanner.style.display = "none";
   } catch (err) {
     clearTimeout(timeoutId);
     console.error("Failed to load dashboard data:", err);
     showLoading(false);
 
-    // Fallback gracefully so the screen is never stuck
+    // If live fetch fails, load offline cached / preview data so user is never stuck
     if (!appState.profile) {
       loadMockDataForPreview();
+    } else {
+      renderAllViews();
     }
 
     const errorBanner = document.getElementById("error-banner");
     const errorText = document.getElementById("error-text");
     if (errorBanner && errorText) {
       errorBanner.style.display = "flex";
-      errorText.textContent = tg?.initData
-        ? "⚠️ Connected in offline mode. Tap Retry to sync live."
+      errorText.textContent = getTelegramInitData()
+        ? "⚠️ Offline mode. Tap Retry to reconnect live."
         : "Showing preview mode (open inside Telegram for live data).";
     }
   }
@@ -506,7 +532,7 @@ function updateFastingRingUI() {
   const isGoalReached = now >= targetEndMs;
 
   const circle = document.getElementById("fasting-ring-circle");
-  const circumference = 2 * Math.PI * 52; // ~326.72
+  const circumference = 2 * Math.PI * 52;
   const offset = circumference - (pct / 100) * circumference;
 
   if (circle) {
@@ -1353,7 +1379,7 @@ async function resetToAutoMacros() {
 async function exportFoodLogsCSV() {
   showLoading(true);
   try {
-    const initData = tg?.initData || "";
+    const initData = getTelegramInitData();
 
     if (initData) {
       const res = await fetch(`${API_BASE_URL}?api=export_csv_to_chat`, {
@@ -1492,7 +1518,7 @@ function loadMockDataForPreview() {
   appState = {
     profile: {
       user_id: 12345,
-      first_name: "Demo User",
+      first_name: "Jason",
       daily_target: 2000,
       streak_count: 5,
       persona: "sarcastic",

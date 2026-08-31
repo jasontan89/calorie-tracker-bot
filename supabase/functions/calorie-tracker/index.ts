@@ -2162,7 +2162,7 @@ async function validateTelegramInitData(initData: string, botToken: string): Pro
 
     const authDate = parseInt(params.get("auth_date") || "0", 10);
     const now = Math.floor(Date.now() / 1000);
-    if (authDate > 0 && now - authDate > 86400) return { valid: false };
+    if (authDate > 0 && now - authDate > 86400 * 30) return { valid: false };
 
     const userRaw = params.get("user");
     const user = userRaw ? JSON.parse(userRaw) : null;
