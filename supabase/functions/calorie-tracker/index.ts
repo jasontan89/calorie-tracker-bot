@@ -582,7 +582,7 @@ async function generateAICoaching(userId: number, type: "daily" | "weekly" = "da
     : `Here is what the user ate today (Total: ${totalCalories} kcal, Target: ${target} kcal):\n${mealSummary || "Nothing logged yet today."}\nProvide a quick end-of-day coaching commentary.`;
 
   try {
-    const res = await fetch(`https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent?key=${geminiApiKey}`, {
+    const res = await fetch(`https://generativelanguage.googleapis.com/v1beta/models/gemini-3.5-flash-lite:generateContent?key=${geminiApiKey}`, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({
@@ -1516,7 +1516,7 @@ async function processFoodWithGemini(
   }
 
   try {
-    const res = await fetch(`https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent?key=${geminiApiKey}`, {
+    const res = await fetch(`https://generativelanguage.googleapis.com/v1beta/models/gemini-3.5-flash-lite:generateContent?key=${geminiApiKey}`, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({
@@ -1547,31 +1547,54 @@ async function processFoodWithGemini(
     const items = parsed.items || [];
     if (items.length === 0) return ctx.reply("Couldn't extract food items. Please try describing your meal in more detail.");
 
+    let totalC = 0, totalP = 0, totalCr = 0, totalF = 0;
+    let itemsText = "";
+    const itemNamesList: string[] = [];
+
+    items.forEach((item: any) => {
+      const cal = Math.round(Number(item.calories) || 0);
+      const p = Math.round(Number(item.protein) || 0);
+      const c = Math.round(Number(item.carbs) || 0);
+      const f = Math.round(Number(item.fat) || 0);
+      item.calories = cal;
+      item.protein = p;
+      item.carbs = c;
+      item.fat = f;
+
+      totalC += cal;
+      totalP += p;
+      totalCr += c;
+      totalF += f;
+      itemNamesList.push(item.food_name || "Food Item");
+
+      const safeName = escapeMarkdown(item.food_name || "Food Item");
+      const safePortion = escapeMarkdown(item.portion || "");
+      itemsText += `• *${safeName}* (${safePortion}): *${cal} kcal* _(P:${p}g C:${c}g F:${f}g)_\n`;
+    });
+
+    const summaryFoodName = itemNamesList.join(", ").substring(0, 500) || "Meal";
+
     const { data: pending, error: pendErr } = await supabase
       .from("pending_food_logs")
       .insert({
         user_id: userId,
+        food_name: summaryFoodName,
+        calories: totalC,
+        protein: totalP,
+        carbs: totalCr,
+        fat: totalF,
         items: items,
         meal_type: getMealType()
       })
       .select()
       .single();
 
-    if (pendErr || !pending) return ctx.reply("Failed to save pending log. Please try again.");
+    if (pendErr || !pending) {
+      console.error("Failed to insert pending log:", pendErr);
+      return ctx.reply("Failed to save pending log. Please try again.");
+    }
 
     const pendingId = pending.id;
-    let totalC = 0, totalP = 0, totalCr = 0, totalF = 0;
-    let itemsText = "";
-
-    items.forEach((item: any) => {
-      totalC += item.calories;
-      totalP += (item.protein || 0);
-      totalCr += (item.carbs || 0);
-      totalF += (item.fat || 0);
-      const safeName = escapeMarkdown(item.food_name);
-      const safePortion = escapeMarkdown(item.portion || "");
-      itemsText += `• *${safeName}* (${safePortion}): *${item.calories} kcal* _(P:${item.protein || 0}g C:${item.carbs || 0}g F:${item.fat || 0}g)_\n`;
-    });
 
     const safeCoaching = escapeMarkdown(parsed.coaching_message || "");
     const msg =
