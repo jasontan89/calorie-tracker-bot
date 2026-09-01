@@ -582,7 +582,7 @@ async function generateAICoaching(userId: number, type: "daily" | "weekly" = "da
     : `Here is what the user ate today (Total: ${totalCalories} kcal, Target: ${target} kcal):\n${mealSummary || "Nothing logged yet today."}\nProvide a quick end-of-day coaching commentary.`;
 
   try {
-    const res = await fetch(`https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash-lite:generateContent?key=${geminiApiKey}`, {
+    const res = await fetch(`https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent?key=${geminiApiKey}`, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({
@@ -1516,7 +1516,7 @@ async function processFoodWithGemini(
   }
 
   try {
-    const res = await fetch(`https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash-lite:generateContent?key=${geminiApiKey}`, {
+    const res = await fetch(`https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent?key=${geminiApiKey}`, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({
@@ -1530,10 +1530,16 @@ async function processFoodWithGemini(
     });
 
     const aiRes = await res.json();
+    if (!res.ok) {
+      console.error("Gemini API error:", res.status, aiRes);
+      return ctx.reply("Sorry, I couldn't analyze that food item. Please try again!");
+    }
+
     const rawText = aiRes.candidates?.[0]?.content?.parts?.[0]?.text;
     if (!rawText) return ctx.reply("Sorry, I couldn't analyze that food item. Please try again!");
 
-    const parsed = JSON.parse(rawText.trim());
+    const cleanedJson = rawText.replace(/```json\s*|```/g, "").trim();
+    const parsed = JSON.parse(cleanedJson);
     if (!parsed.is_food) {
       return ctx.reply(`🤔 ${parsed.non_food_reason || "That doesn't look like food! Please send a photo or description of a meal."}`);
     }
