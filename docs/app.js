@@ -56,20 +56,51 @@ function getTelegramInitData() {
 }
 
 /**
- * Build request headers with Supabase apikey and Telegram initData
+ * Build request headers with Supabase apikey
  */
 function getApiHeaders(customHeaders = {}) {
-  const initData = getTelegramInitData();
   const headers = {
     "Content-Type": "application/json",
     "apikey": SUPABASE_ANON_KEY,
+    "Authorization": `Bearer ${SUPABASE_ANON_KEY}`,
     ...customHeaders
   };
+  const initData = getTelegramInitData();
   if (initData) {
-    headers["Authorization"] = `Bearer ${initData}`;
-    headers["X-Telegram-Init-Data"] = initData;
+    try {
+      headers["X-Telegram-Init-Data"] = encodeURIComponent(initData);
+    } catch (e) {
+      headers["X-Telegram-Init-Data"] = initData;
+    }
   }
   return headers;
+}
+
+/**
+ * Centralized API fetch helper: automatically injects query params, initData, headers, and body
+ */
+async function callApi(action, options = {}) {
+  const initData = getTelegramInitData();
+  const params = new URLSearchParams(options.params || {});
+  params.set("api", action);
+  if (initData) {
+    params.set("initData", initData);
+  }
+
+  const url = `${API_BASE_URL}?${params.toString()}`;
+  const headers = getApiHeaders(options.headers || {});
+
+  const fetchOptions = {
+    method: options.method || "GET",
+    headers: headers,
+    signal: options.signal
+  };
+
+  if (options.body) {
+    fetchOptions.body = typeof options.body === "string" ? options.body : JSON.stringify(options.body);
+  }
+
+  return await fetch(url, fetchOptions);
 }
 
 // Initialize on DOM load
@@ -310,18 +341,12 @@ function switchTab(tabId) {
 async function fetchDashboardData() {
   showLoading(true);
 
-  // 6-second safety timeout controller
+  // 10-second safety timeout controller
   const controller = new AbortController();
-  const timeoutId = setTimeout(() => controller.abort(), 6000);
+  const timeoutId = setTimeout(() => controller.abort(), 10000);
 
   try {
-    const headers = getApiHeaders();
-    const response = await fetch(`${API_BASE_URL}?api=dashboard`, {
-      method: "GET",
-      headers: headers,
-      signal: controller.signal
-    });
-
+    const response = await callApi("dashboard", { signal: controller.signal });
     clearTimeout(timeoutId);
 
     if (!response.ok) {
@@ -345,20 +370,13 @@ async function fetchDashboardData() {
     console.error("Failed to load dashboard data:", err);
     showLoading(false);
 
-    // If live fetch fails, load offline cached / preview data so user is never stuck
-    if (!appState.profile) {
-      loadMockDataForPreview();
-    } else {
-      renderAllViews();
-    }
+    renderAllViews();
 
     const errorBanner = document.getElementById("error-banner");
     const errorText = document.getElementById("error-text");
     if (errorBanner && errorText) {
       errorBanner.style.display = "flex";
-      errorText.textContent = getTelegramInitData()
-        ? "⚠️ Offline mode. Tap Retry to reconnect live."
-        : "Showing preview mode (open inside Telegram for live data).";
+      errorText.textContent = "⚠️ Unable to load latest data. Tap Retry to reconnect.";
     }
   }
 }
@@ -577,10 +595,9 @@ function updateFastingRingUI() {
 async function handleStartFast(targetHours) {
   showLoading(true);
   try {
-    const res = await fetch(`${API_BASE_URL}?api=start_fast`, {
+    const res = await callApi("start_fast", {
       method: "POST",
-      headers: getApiHeaders(),
-      body: JSON.stringify({ target_hours: targetHours })
+      body: { target_hours: targetHours }
     });
 
     if (!res.ok) throw new Error("Failed to start fast");
@@ -604,10 +621,7 @@ async function handleStopFast() {
   const proceed = async () => {
     showLoading(true);
     try {
-      const res = await fetch(`${API_BASE_URL}?api=stop_fast`, {
-        method: "POST",
-        headers: getApiHeaders()
-      });
+      const res = await callApi("stop_fast", { method: "POST" });
 
       if (!res.ok) throw new Error("Failed to stop fast");
       appState.activeFast = null;
@@ -637,10 +651,7 @@ async function handleStopFast() {
 async function handleCancelFast() {
   showLoading(true);
   try {
-    await fetch(`${API_BASE_URL}?api=cancel_fast`, {
-      method: "POST",
-      headers: getApiHeaders()
-    });
+    await callApi("cancel_fast", { method: "POST" });
 
     appState.activeFast = null;
     showLoading(false);
@@ -712,9 +723,8 @@ function closeBarcodeScanner() {
 async function lookupBarcodeProduct(barcode) {
   showLoading(true);
   try {
-    const res = await fetch(`${API_BASE_URL}?api=lookup_barcode&barcode=${encodeURIComponent(barcode)}`, {
-      method: "GET",
-      headers: getApiHeaders()
+    const res = await callApi("lookup_barcode", {
+      params: { barcode: barcode }
     });
 
     if (!res.ok) {
@@ -814,10 +824,9 @@ async function handleLogBarcodeProduct() {
   const mealType = document.getElementById("select-meal-type")?.value || "Meal";
 
   try {
-    const res = await fetch(`${API_BASE_URL}?api=log_barcode_meal`, {
+    const res = await callApi("log_barcode_meal", {
       method: "POST",
-      headers: getApiHeaders(),
-      body: JSON.stringify({
+      body: {
         food_name: currentScannedProduct.name,
         calories: cal,
         protein: p,
@@ -825,7 +834,7 @@ async function handleLogBarcodeProduct() {
         fat: f,
         meal_type: mealType,
         barcode: currentScannedProduct.barcode
-      })
+      }
     });
 
     if (!res.ok) throw new Error("Failed to log barcode food");
@@ -848,10 +857,7 @@ async function handleLogBarcodeProduct() {
 async function handleGenerateWeeklyReport() {
   showLoading(true);
   try {
-    const res = await fetch(`${API_BASE_URL}?api=generate_weekly_report`, {
-      method: "POST",
-      headers: getApiHeaders()
-    });
+    const res = await callApi("generate_weekly_report", { method: "POST" });
 
     showLoading(false);
     if (res.ok) {
@@ -1089,10 +1095,9 @@ async function confirmAndDeleteMeal(logId, foodName) {
     if (elem) elem.style.opacity = "0.3";
 
     try {
-      const res = await fetch(`${API_BASE_URL}?api=delete_food`, {
+      const res = await callApi("delete_food", {
         method: "POST",
-        headers: getApiHeaders(),
-        body: JSON.stringify({ log_id: logId })
+        body: { log_id: logId }
       });
 
       if (!res.ok) throw new Error("Delete failed");
@@ -1169,10 +1174,9 @@ function renderPresetsList() {
 async function logPresetToToday(presetId, foodName) {
   triggerHaptic("medium");
   try {
-    const res = await fetch(`${API_BASE_URL}?api=log_preset`, {
+    const res = await callApi("log_preset", {
       method: "POST",
-      headers: getApiHeaders(),
-      body: JSON.stringify({ preset_id: presetId })
+      body: { preset_id: presetId }
     });
 
     if (!res.ok) throw new Error("Log preset failed");
@@ -1193,10 +1197,9 @@ async function deletePreset(presetId, foodName) {
   const proceed = async () => {
     triggerHaptic("warning");
     try {
-      const res = await fetch(`${API_BASE_URL}?api=delete_preset`, {
+      const res = await callApi("delete_preset", {
         method: "POST",
-        headers: getApiHeaders(),
-        body: JSON.stringify({ preset_id: presetId })
+        body: { preset_id: presetId }
       });
 
       if (!res.ok) throw new Error("Delete preset failed");
@@ -1268,10 +1271,9 @@ async function updatePersona(newPersona) {
   document.getElementById(`persona-${newPersona}`)?.classList.add("selected");
 
   try {
-    const res = await fetch(`${API_BASE_URL}?api=update_persona`, {
+    const res = await callApi("update_persona", {
       method: "POST",
-      headers: getApiHeaders(),
-      body: JSON.stringify({ persona: newPersona })
+      body: { persona: newPersona }
     });
 
     if (!res.ok) throw new Error("Update persona failed");
@@ -1293,10 +1295,9 @@ async function updateLoggingMode(newMode) {
   document.getElementById(`mode-${newMode}`)?.classList.add("selected");
 
   try {
-    const res = await fetch(`${API_BASE_URL}?api=update_logging_mode`, {
+    const res = await callApi("update_logging_mode", {
       method: "POST",
-      headers: getApiHeaders(),
-      body: JSON.stringify({ mode: newMode })
+      body: { mode: newMode }
     });
 
     if (!res.ok) throw new Error("Update logging mode failed");
@@ -1316,10 +1317,9 @@ async function updateLoggingMode(newMode) {
  */
 async function updateCalorieTarget(newTarget) {
   try {
-    const res = await fetch(`${API_BASE_URL}?api=update_target`, {
+    const res = await callApi("update_target", {
       method: "POST",
-      headers: getApiHeaders(),
-      body: JSON.stringify({ target: newTarget })
+      body: { target: newTarget }
     });
 
     if (!res.ok) throw new Error("Update target failed");
@@ -1339,10 +1339,9 @@ async function updateCalorieTarget(newTarget) {
  */
 async function updateMacroTargets(protein, carbs, fat) {
   try {
-    const res = await fetch(`${API_BASE_URL}?api=update_macros`, {
+    const res = await callApi("update_macros", {
       method: "POST",
-      headers: getApiHeaders(),
-      body: JSON.stringify({ protein, carbs, fat })
+      body: { protein, carbs, fat }
     });
 
     if (!res.ok) throw new Error("Update macros failed");
@@ -1362,10 +1361,9 @@ async function updateMacroTargets(protein, carbs, fat) {
  */
 async function resetToAutoMacros() {
   try {
-    const res = await fetch(`${API_BASE_URL}?api=update_macros`, {
+    const res = await callApi("update_macros", {
       method: "POST",
-      headers: getApiHeaders(),
-      body: JSON.stringify({ is_auto: true })
+      body: { is_auto: true }
     });
 
     if (!res.ok) throw new Error("Reset macros failed");
@@ -1385,33 +1383,20 @@ async function resetToAutoMacros() {
 async function exportFoodLogsCSV() {
   showLoading(true);
   try {
-    const initData = getTelegramInitData();
-
-    if (initData) {
-      const res = await fetch(`${API_BASE_URL}?api=export_csv_to_chat`, {
-        method: "POST",
-        headers: getApiHeaders()
-      });
-
-      if (res.ok) {
-        showLoading(false);
-        showToast("📥 CSV Export sent directly to your Telegram chat!");
-        triggerHaptic("success");
-        return;
-      }
+    const resChat = await callApi("export_csv_to_chat", { method: "POST" });
+    if (resChat.ok) {
+      showLoading(false);
+      showToast("📥 CSV Export sent directly to your Telegram chat!");
+      triggerHaptic("success");
+      return;
     }
 
     // Fallback: Browser download
     let logs = [];
-    if (initData) {
-      const res = await fetch(`${API_BASE_URL}?api=export_all_logs`, {
-        method: "GET",
-        headers: getApiHeaders()
-      });
-      if (res.ok) {
-        const data = await res.json();
-        logs = data.logs || [];
-      }
+    const resAll = await callApi("export_all_logs", { method: "GET" });
+    if (resAll.ok) {
+      const data = await resAll.json();
+      logs = data.logs || [];
     }
 
     if (logs.length === 0) {
@@ -1514,54 +1499,4 @@ function escapeHtml(str) {
     .replace(/</g, "&lt;")
     .replace(/>/g, "&gt;")
     .replace(/"/g, "&quot;");
-}
-
-/**
- * Fallback Mock Data for Browser / Dev Preview
- */
-function loadMockDataForPreview() {
-  const today = new Date().toISOString().substring(0, 10);
-  appState = {
-    profile: {
-      user_id: 12345,
-      first_name: "Jason",
-      daily_target: 2000,
-      streak_count: 5,
-      persona: "sarcastic",
-      logging_mode: "itemized"
-    },
-    todayDate: today,
-    selectedDate: today,
-    todayTotals: { calories: 1450, protein: 110, carbs: 160, fat: 42 },
-    macroTargets: { protein: 150, carbs: 200, fat: 67 },
-    todayLogs: [
-      { id: 1, food_name: "2 Scrambled Eggs & Whole Wheat Toast", calories: 360, protein: 18, carbs: 26, fat: 20, meal_type: "Breakfast" },
-      { id: 2, food_name: "Chicken Rice & Steamed Greens", calories: 650, protein: 45, carbs: 75, fat: 18, meal_type: "Lunch" },
-      { id: 3, food_name: "Whey Protein Shake & Banana", calories: 240, protein: 30, carbs: 28, fat: 2, meal_type: "Snack" },
-      { id: 4, food_name: "Greek Yogurt & Berries", calories: 200, protein: 17, carbs: 31, fat: 2, meal_type: "Dinner" }
-    ],
-    history7d: [
-      { date: "2026-08-24", label: "08-24", calories: 1920, protein: 130, carbs: 190, fat: 62, logs: [] },
-      { date: "2026-08-25", label: "08-25", calories: 2150, protein: 145, carbs: 220, fat: 70, logs: [] },
-      { date: "2026-08-26", label: "08-26", calories: 1850, protein: 125, carbs: 180, fat: 60, logs: [] },
-      { date: "2026-08-27", label: "08-27", calories: 1980, protein: 135, carbs: 195, fat: 64, logs: [] },
-      { date: "2026-08-28", label: "08-28", calories: 1750, protein: 120, carbs: 170, fat: 58, logs: [] },
-      { date: "2026-08-29", label: "08-29", calories: 2050, protein: 140, carbs: 210, fat: 68, logs: [] },
-      { date: today, label: "Today", calories: 1450, protein: 110, carbs: 160, fat: 42, logs: [] }
-    ],
-    presets: [
-      { id: "p1", food_name: "Whey Protein Shake (1 Scoop)", calories: 130, protein: 25, carbs: 3, fat: 2 },
-      { id: "p2", food_name: "Creatine Monohydrate (5g)", calories: 0, protein: 0, carbs: 0, fat: 0 },
-      { id: "p3", food_name: "Black Coffee / Americano", calories: 5, protein: 0, carbs: 1, fat: 0 }
-    ],
-    activeFast: {
-      id: "demo-fast",
-      start_time: new Date(Date.now() - 14.5 * 60 * 60 * 1000).toISOString(),
-      target_hours: 16,
-      status: "active"
-    },
-    currentChartView: "calories",
-    chartInstance: null
-  };
-  renderAllViews();
 }
