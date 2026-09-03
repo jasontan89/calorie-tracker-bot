@@ -79,6 +79,34 @@ async function registerBotCommandsOnce(force: boolean = false) {
       console.error("Failed to set chat menu button:", btnErr);
     }
 
+    try {
+      await (bot.api.raw as any).setMyDescription({
+        description:
+          "🥑 AI Calorie Tracker & Nutrition Coach\n\n" +
+          "Log meals effortlessly with photos 📸, voice notes 🎙️, or text ✍️ powered by Google Gemini.\n\n" +
+          "⚡ Features:\n" +
+          "• Instant calorie & macro calculations (P/C/F)\n" +
+          "• Interactive WebApp dashboard\n" +
+          "• Intermittent Fasting timer (16:8, 18:6, 20:4)\n" +
+          "• Barcode scanner via Open Food Facts\n" +
+          "• 7-Day visual report cards & consistency streaks\n" +
+          "• Selectable AI coach personalities\n\n" +
+          "Tap START to begin tracking!"
+      });
+      console.log("Bot description updated.");
+    } catch (descErr) {
+      console.error("Failed to set bot description:", descErr);
+    }
+
+    try {
+      await (bot.api.raw as any).setMyShortDescription({
+        short_description: "Effortless AI Calorie & Macro Tracker with photo, voice, barcodes & interactive WebApp dashboard."
+      });
+      console.log("Bot short description updated.");
+    } catch (sDescErr) {
+      console.error("Failed to set bot short description:", sDescErr);
+    }
+
     commandsRegistered = true;
     console.log("Persistent bot commands menu registered successfully.");
   } catch (err) {
@@ -2381,6 +2409,14 @@ Deno.serve(async (req) => {
           activeFast: activeFast || null,
           recentFasts: recentFasts
         }), {
+          status: 200,
+          headers: { ...corsHeaders, "Content-Type": "application/json" }
+        });
+      }
+
+      if (apiAction === "setup_bot_profile") {
+        await registerBotCommandsOnce(true);
+        return new Response(JSON.stringify({ success: true, message: "Commands, description, and WebApp menu button registered successfully" }), {
           status: 200,
           headers: { ...corsHeaders, "Content-Type": "application/json" }
         });
