@@ -2143,7 +2143,7 @@ async function sendCronReminders(type: "midday" | "night" | "weekly") {
       try {
         const text = logCount === 0
           ? `🔔 *Daily Check-in Reminder (SGT)*\n\nYou haven't logged any meals today. Record what you ate to finish strong! 📸`
-          : `🔔 *Daily Check-in Reminder (SGT)*\n\nYou've logged your meals today!\${coachingText}`;
+          : `🔔 *Daily Check-in Reminder (SGT)*\n\nYou've logged your meals today!${coachingText}`;
         await bot.api.sendMessage(userId, text, { parse_mode: "Markdown" });
       } catch (err) {}
     }
@@ -2314,40 +2314,33 @@ Deno.serve(async (req) => {
       }
 
       if (apiAction === "dashboard") {
-        const { data: profile } = await supabase
-          .from("user_profiles")
-          .select("*")
-          .eq("user_id", userId)
-          .maybeSingle();
-
-        const target = profile?.daily_target ?? 2000;
-        const macroTargets = getMacroTargets(target, profile);
         const sgtStartIso = getSGTStartOfDayISO();
-
-        // Today's food logs
-        const { data: todayLogs } = await supabase
-          .from("food_logs")
-          .select("id, food_name, calories, protein, carbs, fat, meal_type, created_at")
-          .eq("user_id", userId)
-          .gte("created_at", sgtStartIso)
-          .order("created_at", { ascending: true });
-
-        const totalCalories = (todayLogs ?? []).reduce((sum, item) => sum + item.calories, 0);
-        const totalProtein = (todayLogs ?? []).reduce((sum, item) => sum + (item.protein || 0), 0);
-        const totalCarbs = (todayLogs ?? []).reduce((sum, item) => sum + (item.carbs || 0), 0);
-        const totalFat = (todayLogs ?? []).reduce((sum, item) => sum + (item.fat || 0), 0);
-
-        // 7-day history
         const sevenDaysAgoDate = new Date(new Date().getTime() - 6 * 24 * 60 * 60 * 1000);
         const sevenDaysAgoIso = getSGTStartOfDayISO(sevenDaysAgoDate);
 
-        const { data: pastLogs } = await supabase
-          .from("food_logs")
-          .select("id, food_name, calories, protein, carbs, fat, meal_type, created_at")
-          .eq("user_id", userId)
-          .gte("created_at", sevenDaysAgoIso)
-          .order("created_at", { ascending: true });
+        // Fetch all dashboard data concurrently in parallel
+        const [profileRes, pastLogsRes, presetsRes, activeFast, recentFastsRes] = await Promise.all([
+          supabase.from("user_profiles").select("*").eq("user_id", userId).maybeSingle(),
+          supabase.from("food_logs").select("id, food_name, calories, protein, carbs, fat, meal_type, created_at")
+            .eq("user_id", userId).gte("created_at", sevenDaysAgoIso).order("created_at", { ascending: true }),
+          supabase.from("user_presets").select("*").eq("user_id", userId).order("created_at", { ascending: false }),
+          getActiveFast(userId),
+          supabase.from("fasting_logs").select("*").eq("user_id", userId).order("created_at", { ascending: false }).limit(5)
+        ]);
 
+        const profile = profileRes.data;
+        const target = profile?.daily_target ?? 2000;
+        const macroTargets = getMacroTargets(target, profile);
+        const pastLogs = pastLogsRes.data || [];
+
+        // Today's food logs are a subset of the past 7 days logs
+        const todayLogs = pastLogs.filter(l => l.created_at >= sgtStartIso);
+        const totalCalories = todayLogs.reduce((sum, item) => sum + item.calories, 0);
+        const totalProtein = todayLogs.reduce((sum, item) => sum + (item.protein || 0), 0);
+        const totalCarbs = todayLogs.reduce((sum, item) => sum + (item.carbs || 0), 0);
+        const totalFat = todayLogs.reduce((sum, item) => sum + (item.fat || 0), 0);
+
+        // 7-day history map
         const historyMap: Record<string, { date: string; label: string; calories: number; protein: number; carbs: number; fat: number; logs: any[] }> = {};
         for (let i = 6; i >= 0; i--) {
           const d = new Date(new Date().getTime() - i * 24 * 60 * 60 * 1000);
@@ -2363,7 +2356,7 @@ Deno.serve(async (req) => {
           };
         }
 
-        (pastLogs ?? []).forEach((log) => {
+        pastLogs.forEach((log) => {
           const dStr = getSGTDateStr(new Date(log.created_at));
           if (historyMap[dStr]) {
             historyMap[dStr].calories += log.calories || 0;
@@ -2374,32 +2367,19 @@ Deno.serve(async (req) => {
           }
         });
 
-        // Presets
-        const { data: presets } = await supabase
-          .from("user_presets")
-          .select("*")
-          .eq("user_id", userId)
-          .order("created_at", { ascending: false });
-
-        // Fasting status
-        const activeFast = await getActiveFast(userId);
-        const { data: recentFasts } = await supabase
-          .from("fasting_logs")
-          .select("*")
-          .eq("user_id", userId)
-          .order("created_at", { ascending: false })
-          .limit(5);
+        const presets = presetsRes.data || [];
+        const recentFasts = recentFastsRes.data || [];
 
         return new Response(JSON.stringify({
           profile: profile || { user_id: userId, daily_target: 2000, streak_count: 0, persona: "sarcastic", logging_mode: "itemized" },
           todayDate: getSGTDateStr(),
           todayTotals: { calories: totalCalories, protein: totalProtein, carbs: totalCarbs, fat: totalFat },
           macroTargets: macroTargets,
-          todayLogs: todayLogs || [],
+          todayLogs: todayLogs,
           history7d: Object.values(historyMap),
-          presets: presets || [],
+          presets: presets,
           activeFast: activeFast || null,
-          recentFasts: recentFasts || []
+          recentFasts: recentFasts
         }), {
           status: 200,
           headers: { ...corsHeaders, "Content-Type": "application/json" }

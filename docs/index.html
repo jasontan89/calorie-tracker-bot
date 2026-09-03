@@ -21,10 +21,10 @@
       </div>
       <div class="header-badges">
         <div class="badge streak-badge" id="streak-badge" title="Consistency Streak">
-          🔥 <span id="streak-count">0</span>
+          🔥 <span id="streak-count">--</span>
         </div>
         <div class="badge target-badge" id="target-badge" title="Daily Calorie Goal">
-          🎯 <span id="header-target">2000</span> kcal
+          🎯 <span id="header-target">--</span> kcal
         </div>
       </div>
     </header>
@@ -47,14 +47,11 @@
 
     <!-- Loading State Overlay -->
     <div id="loading-spinner" class="loading-overlay">
-      <div class="spinner"></div>
-      <p>Loading your nutrition data...</p>
-    </div>
-
-    <!-- Error Banner -->
-    <div id="error-banner" class="error-banner" style="display: none;">
-      <span id="error-text">⚠️ Connection error</span>
-      <button id="retry-btn" class="btn-sm">Retry</button>
+      <div class="spinner" id="loading-spinner-anim"></div>
+      <p id="loading-status-text" style="color: #e2e8f0; font-size: 14px; font-weight: 500; text-align: center; max-width: 280px; margin: 0; line-height: 1.4;">Loading your nutrition data...</p>
+      <div id="loading-reconnect-wrap" style="display: none; margin-top: 8px;">
+        <button id="loading-reconnect-btn" class="btn-primary" style="padding: 10px 24px; font-size: 13px; font-weight: 600; border-radius: 20px; cursor: pointer;">🔄 Tap to Reconnect</button>
+      </div>
     </div>
 
     <!-- TAB 1: DASHBOARD -->
@@ -80,13 +77,13 @@
         
         <div class="calorie-progress-container">
           <div class="calorie-numbers">
-            <span class="current-calories" id="today-calories">0</span>
-            <span class="target-calories">/ <span id="today-target">2000</span> kcal</span>
+            <span class="current-calories" id="today-calories">--</span>
+            <span class="target-calories">/ <span id="today-target">--</span> kcal</span>
           </div>
           <div class="progress-bar-bg">
             <div class="progress-bar-fill" id="calorie-bar-fill" style="width: 0%;"></div>
           </div>
-          <div class="calorie-subtext" id="calorie-remaining-text">2000 kcal remaining</div>
+          <div class="calorie-subtext" id="calorie-remaining-text">--</div>
         </div>
 
         <div class="macros-grid">
@@ -95,7 +92,7 @@
               <span class="macro-icon">🥩</span>
               <span class="macro-title">Protein</span>
             </div>
-            <div class="macro-value"><span id="macro-p-val">0</span> / <span id="macro-p-target">150</span>g</div>
+            <div class="macro-value"><span id="macro-p-val">--</span> / <span id="macro-p-target">--</span>g</div>
             <div class="macro-bar-bg"><div class="macro-bar-fill protein-fill" id="macro-p-fill" style="width: 0%;"></div></div>
           </div>
 
@@ -104,7 +101,7 @@
               <span class="macro-icon">🍚</span>
               <span class="macro-title">Carbs</span>
             </div>
-            <div class="macro-value"><span id="macro-c-val">0</span> / <span id="macro-c-target">200</span>g</div>
+            <div class="macro-value"><span id="macro-c-val">--</span> / <span id="macro-c-target">--</span>g</div>
             <div class="macro-bar-bg"><div class="macro-bar-fill carbs-fill" id="macro-c-fill" style="width: 0%;"></div></div>
           </div>
 
@@ -113,7 +110,7 @@
               <span class="macro-icon">🥑</span>
               <span class="macro-title">Fats</span>
             </div>
-            <div class="macro-value"><span id="macro-f-val">0</span> / <span id="macro-f-target">67</span>g</div>
+            <div class="macro-value"><span id="macro-f-val">--</span> / <span id="macro-f-target">--</span>g</div>
             <div class="macro-bar-bg"><div class="macro-bar-fill fat-fill" id="macro-f-fill" style="width: 0%;"></div></div>
           </div>
         </div>
@@ -414,6 +411,6 @@
   <!-- Deferred Scripts at End of Body (Non-blocking) -->
   <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.1/dist/chart.umd.min.js"></script>
   <script src="https://unpkg.com/html5-qrcode@2.3.8/html5-qrcode.min.js" defer></script>
-  <script src="app.js?v=20260901_0917"></script>
+  <script src="app.js?v=20260903_0946"></script>
 </body>
 </html>

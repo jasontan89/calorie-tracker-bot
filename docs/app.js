@@ -314,10 +314,17 @@ function setupEventListeners() {
     triggerHaptic("medium");
   });
 
-  // Retry Button
+  // Reconnect button on full-screen loading overlay
+  document.getElementById("loading-reconnect-btn")?.addEventListener("click", () => {
+    triggerHaptic("medium");
+    fetchDashboardData(1);
+  });
+
+  // Retry Button (if present)
   document.getElementById("retry-btn")?.addEventListener("click", () => {
-    document.getElementById("error-banner").style.display = "none";
-    fetchDashboardData();
+    const banner = document.getElementById("error-banner");
+    if (banner) banner.style.display = "none";
+    fetchDashboardData(1);
   });
 }
 
@@ -335,48 +342,119 @@ function switchTab(tabId) {
   if (targetContent) targetContent.classList.add("active");
 }
 
+let isInitialLoad = true;
+
 /**
  * Fetch Main Dashboard Data from Backend API
+ * Automatically handles Edge Function cold starts with progressive status updates & auto-retry.
  */
-async function fetchDashboardData() {
+async function fetchDashboardData(attempt = 1) {
+  const maxRetries = 3;
   showLoading(true);
 
-  // 10-second safety timeout controller
+  const statusTextElem = document.getElementById("loading-status-text");
+  const spinnerAnimElem = document.getElementById("loading-spinner-anim");
+  const reconnectWrap = document.getElementById("loading-reconnect-wrap");
+
+  if (reconnectWrap) reconnectWrap.style.display = "none";
+  if (spinnerAnimElem) spinnerAnimElem.style.display = "block";
+
+  // Progressive status updates for user feedback during cold starts
+  if (statusTextElem) {
+    if (attempt === 1) {
+      statusTextElem.textContent = "Loading your nutrition data...";
+    } else {
+      statusTextElem.textContent = `Connecting to server (attempt ${attempt} of ${maxRetries})...`;
+    }
+  }
+
+  // Timer 1: after 3.5 seconds
+  const timer1 = setTimeout(() => {
+    if (statusTextElem) {
+      statusTextElem.textContent = "Waking up server & syncing live logs...";
+    }
+  }, 3500);
+
+  // Timer 2: after 8 seconds
+  const timer2 = setTimeout(() => {
+    if (statusTextElem) {
+      statusTextElem.textContent = "Almost ready, fetching your latest records...";
+    }
+  }, 8000);
+
+  // Timer 3: after 16 seconds
+  const timer3 = setTimeout(() => {
+    if (statusTextElem) {
+      statusTextElem.textContent = "Establishing secure database session...";
+    }
+  }, 16000);
+
+  // Generous 35-second timeout per attempt to allow cold starts to finish
   const controller = new AbortController();
-  const timeoutId = setTimeout(() => controller.abort(), 10000);
+  const timeoutId = setTimeout(() => controller.abort(), 35000);
+
+  const clearAllTimers = () => {
+    clearTimeout(timer1);
+    clearTimeout(timer2);
+    clearTimeout(timer3);
+    clearTimeout(timeoutId);
+  };
 
   try {
     const response = await callApi("dashboard", { signal: controller.signal });
-    clearTimeout(timeoutId);
+    clearAllTimers();
 
     if (!response.ok) {
-      throw new Error(`API error: ${response.status} ${response.statusText}`);
+      throw new Error(`API returned HTTP ${response.status}: ${response.statusText}`);
     }
 
     const data = await response.json();
+    if (!data || !data.profile) {
+      throw new Error("Invalid dashboard payload received from server");
+    }
+
+    // Successfully received real user data
     appState = {
       ...appState,
       ...data,
       selectedDate: data.todayDate || new Date().toISOString().substring(0, 10)
     };
 
+    isInitialLoad = false;
     renderAllViews();
     showLoading(false);
 
     const errorBanner = document.getElementById("error-banner");
     if (errorBanner) errorBanner.style.display = "none";
   } catch (err) {
-    clearTimeout(timeoutId);
-    console.error("Failed to load dashboard data:", err);
-    showLoading(false);
+    clearAllTimers();
+    console.warn(`Dashboard fetch attempt ${attempt} failed:`, err);
 
-    renderAllViews();
+    // If we haven't exhausted our automatic retries, retry automatically after a short delay
+    if (attempt < maxRetries) {
+      if (statusTextElem) {
+        statusTextElem.textContent = `Server cold start in progress. Retrying in a moment... (${attempt + 1}/${maxRetries})`;
+      }
+      await new Promise((r) => setTimeout(r, 1200));
+      return fetchDashboardData(attempt + 1);
+    }
 
-    const errorBanner = document.getElementById("error-banner");
-    const errorText = document.getElementById("error-text");
-    if (errorBanner && errorText) {
-      errorBanner.style.display = "flex";
-      errorText.textContent = "⚠️ Unable to load latest data. Tap Retry to reconnect.";
+    // All automatic retries exhausted
+    console.error("All dashboard load attempts failed:", err);
+
+    if (isInitialLoad && !appState.profile) {
+      // Keep loading overlay up so user NEVER sees blank/demo data or an offline banner!
+      if (spinnerAnimElem) spinnerAnimElem.style.display = "none";
+      if (statusTextElem) {
+        statusTextElem.textContent = "Unable to connect to server. Please check your internet connection.";
+      }
+      if (reconnectWrap) {
+        reconnectWrap.style.display = "block";
+      }
+    } else {
+      // Already had loaded session; notify softly with toast
+      showLoading(false);
+      showToast("Could not refresh data. Check your connection.", true);
     }
   }
 }
@@ -385,6 +463,7 @@ async function fetchDashboardData() {
  * Render All UI Components
  */
 function renderAllViews() {
+  if (!appState.profile) return;
   try {
     renderHeader();
     renderSummaryCard();
