@@ -2,150 +2,683 @@
 <html lang="en">
 <head>
   <meta charset="UTF-8">
-  <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  <title>SG Meteorological Dashboard</title>
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+  <title>Singapore Meteorological Live Hub</title>
+  
+  <!-- Tailwind CSS -->
   <script src="https://cdn.tailwindcss.com"></script>
+  
+  <!-- Leaflet Map CSS & JS -->
+  <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css" integrity="sha256-p4NxAoJBhIIN+hmNHrzRCf9tD/miZyoHS5obTRR9BMY=" crossorigin=""/>
+  <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js" integrity="sha256-20nQCchB9co0qIjJZRGuk2/Z9VM+kNiyxNV1lvTlZBo=" crossorigin=""></script>
+  
+  <!-- Telegram Web App SDK -->
   <script src="https://telegram.org/js/telegram-web-app.js"></script>
+  
+  <!-- Fonts -->
   <link href="https://fonts.googleapis.com/css2?family=Plus+Jakarta+Sans:wght@400;500;600;700;800&display=swap" rel="stylesheet">
+  
   <style>
-    body { font-family: 'Plus Jakarta Sans', sans-serif; }
+    body {
+      font-family: 'Plus Jakarta Sans', sans-serif;
+      -webkit-tap-highlight-color: transparent;
+    }
+    #map {
+      height: 310px;
+      width: 100%;
+      border-radius: 1rem;
+      z-index: 10;
+    }
+    .leaflet-popup-content-wrapper {
+      border-radius: 1rem;
+      box-shadow: 0 10px 25px -5px rgba(0, 0, 0, 0.1), 0 8px 10px -6px rgba(0, 0, 0, 0.1);
+      font-family: 'Plus Jakarta Sans', sans-serif;
+    }
+    .custom-marker {
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      border-radius: 9999px;
+      font-weight: 700;
+      box-shadow: 0 4px 6px -1px rgba(0, 0, 0, 0.1);
+      border: 2px solid white;
+    }
+    /* Hide scrollbar for tabs */
+    .no-scrollbar::-webkit-scrollbar {
+      display: none;
+    }
+    .no-scrollbar {
+      -ms-overflow-style: none;
+      scrollbar-width: none;
+    }
   </style>
 </head>
-<body class="bg-slate-50 text-slate-800 p-4 min-h-screen">
-  <div class="max-w-md mx-auto space-y-4">
-    
-    <!-- Top Bar -->
-    <div class="flex items-center justify-between pb-1">
-      <div>
-        <h1 class="text-xl font-bold text-slate-900 tracking-tight">Singapore Environment</h1>
-        <p class="text-xs text-slate-500 font-medium">Real-time NEA live feeds</p>
+<body class="bg-slate-100 text-slate-800 antialiased min-h-screen pb-12">
+  
+  <!-- Header App Bar -->
+  <header class="sticky top-0 z-30 bg-white/95 backdrop-blur border-b border-slate-200/80 px-4 py-3 shadow-xs">
+    <div class="max-w-lg mx-auto flex items-center justify-between">
+      <div class="flex items-center gap-2">
+        <span class="text-2xl">🇸🇬</span>
+        <div>
+          <h1 class="text-base font-bold text-slate-900 leading-tight">SG Environment Live</h1>
+          <p class="text-[11px] text-slate-500 font-medium flex items-center gap-1.5">
+            <span class="inline-block w-2 h-2 rounded-full bg-emerald-500 animate-pulse"></span>
+            Live NEA Data • <span id="last-updated">Just now</span>
+          </p>
+        </div>
       </div>
-      <button onclick="fetchData()" class="px-3 py-1.5 bg-blue-50 text-blue-600 font-semibold text-xs rounded-xl hover:bg-blue-100 transition active:scale-95 flex items-center gap-1.5 shadow-sm">
-        <span>🔄 Refresh</span>
+      <button onclick="refreshAllData()" class="px-3 py-1.5 bg-blue-50 text-blue-600 rounded-xl font-bold text-xs hover:bg-blue-100 active:scale-95 transition flex items-center gap-1 shadow-xs">
+        <span id="refresh-icon">🔄</span> Refresh
+      </button>
+    </div>
+  </header>
+
+  <main class="max-w-lg mx-auto px-4 pt-3 space-y-4">
+
+    <!-- Interactive Map Section -->
+    <div class="bg-white rounded-2xl p-3 shadow-sm border border-slate-200/80 space-y-2.5">
+      <div class="flex items-center justify-between px-1">
+        <div class="flex items-center gap-1.5">
+          <span class="text-xs font-bold uppercase tracking-wider text-slate-400">Interactive Map</span>
+          <span id="map-layer-indicator" class="text-[11px] font-semibold text-blue-600 bg-blue-50 px-2 py-0.5 rounded-full">Air Quality (PSI)</span>
+        </div>
+        <!-- Map Layer Toggle Buttons -->
+        <div class="flex bg-slate-100 p-0.5 rounded-xl text-xs font-semibold">
+          <button id="btn-layer-psi" onclick="switchMapLayer('psi')" class="px-2.5 py-1 rounded-lg bg-white text-blue-600 shadow-xs transition">
+            🌬️ PSI
+          </button>
+          <button id="btn-layer-weather" onclick="switchMapLayer('weather')" class="px-2.5 py-1 rounded-lg text-slate-500 transition">
+            🌦️ Weather
+          </button>
+        </div>
+      </div>
+
+      <!-- Map Container -->
+      <div id="map" class="shadow-inner border border-slate-100"></div>
+
+      <!-- Map Legend -->
+      <div id="psi-legend" class="flex items-center justify-between px-2 pt-1 text-[11px] font-medium text-slate-600">
+        <span class="flex items-center gap-1"><span class="w-2.5 h-2.5 rounded-full bg-emerald-500"></span> 0-50 Good</span>
+        <span class="flex items-center gap-1"><span class="w-2.5 h-2.5 rounded-full bg-amber-400"></span> 51-100 Mod</span>
+        <span class="flex items-center gap-1"><span class="w-2.5 h-2.5 rounded-full bg-orange-500"></span> 101-200 Unhealthy</span>
+        <span class="flex items-center gap-1"><span class="w-2.5 h-2.5 rounded-full bg-rose-600"></span> 201+ Very Unhealthy</span>
+      </div>
+    </div>
+
+    <!-- Navigation Feature Tabs -->
+    <div class="flex gap-2 overflow-x-auto no-scrollbar pb-0.5">
+      <button onclick="setTab('psi')" id="tab-btn-psi" class="tab-pill active px-3.5 py-2 rounded-xl text-xs font-bold whitespace-nowrap bg-blue-600 text-white shadow-xs transition">
+        🌬️ Air Quality & Haze
+      </button>
+      <button onclick="setTab('forecast')" id="tab-btn-forecast" class="tab-pill px-3.5 py-2 rounded-xl text-xs font-bold whitespace-nowrap bg-white text-slate-600 border border-slate-200/80 shadow-xs transition">
+        🌤️ Weather & 4-Day
+      </button>
+      <button onclick="setTab('uv')" id="tab-btn-uv" class="tab-pill px-3.5 py-2 rounded-xl text-xs font-bold whitespace-nowrap bg-white text-slate-600 border border-slate-200/80 shadow-xs transition">
+        ☀️ UV & Heat Index
+      </button>
+      <button onclick="setTab('towns')" id="tab-btn-towns" class="tab-pill px-3.5 py-2 rounded-xl text-xs font-bold whitespace-nowrap bg-white text-slate-600 border border-slate-200/80 shadow-xs transition">
+        📍 47 Towns
       </button>
     </div>
 
-    <!-- Overall Status Card -->
-    <div class="bg-white rounded-2xl p-5 shadow-sm border border-slate-100 space-y-3">
-      <div class="flex justify-between items-center">
-        <span class="text-xs font-bold text-slate-400 uppercase tracking-wider">Air Quality (24h PSI)</span>
-        <span id="overall-badge" class="px-3 py-1 rounded-full text-xs font-bold bg-slate-100 text-slate-600">Checking...</span>
-      </div>
-      <div class="flex items-baseline gap-2">
-        <span id="max-psi" class="text-5xl font-extrabold text-slate-900">--</span>
-        <span class="text-sm font-semibold text-slate-400">Peak PSI</span>
-      </div>
+    <!-- TAB 1: PSI & AIR QUALITY -->
+    <div id="tab-content-psi" class="space-y-3">
       
-      <!-- Regions Grid -->
-      <div class="pt-3 border-t border-slate-100">
-        <p class="text-xs font-semibold text-slate-500 mb-2">Regional 24-hr Breakdown</p>
-        <div class="grid grid-cols-5 gap-1.5 text-center" id="regions-container">
-          <div class="bg-slate-50 rounded-xl p-2">
-            <span class="text-[10px] uppercase font-bold text-slate-400 block">Cent</span>
-            <span id="psi-central" class="text-sm font-bold text-slate-800">--</span>
+      <!-- Key Metric Highlight Card -->
+      <div class="bg-white rounded-2xl p-5 shadow-sm border border-slate-200/80 space-y-3">
+        <div class="flex justify-between items-start">
+          <div>
+            <span class="text-xs font-bold text-slate-400 uppercase tracking-wider">Singapore 24h Peak PSI</span>
+            <div class="flex items-baseline gap-2 mt-1">
+              <span id="hero-psi-val" class="text-5xl font-extrabold text-slate-900 tracking-tight">--</span>
+              <span class="text-sm font-semibold text-slate-400">PSI</span>
+            </div>
           </div>
-          <div class="bg-slate-50 rounded-xl p-2">
-            <span class="text-[10px] uppercase font-bold text-slate-400 block">North</span>
-            <span id="psi-north" class="text-sm font-bold text-slate-800">--</span>
+          <span id="hero-status-badge" class="px-3.5 py-1.5 rounded-full text-xs font-bold bg-slate-100 text-slate-600 shadow-2xs">
+            Calculating...
+          </span>
+        </div>
+
+        <div id="health-advisory" class="p-3 bg-blue-50 border border-blue-100 rounded-xl text-xs text-blue-900 leading-relaxed font-medium">
+          Normal activities can be continued for everyone.
+        </div>
+
+        <!-- 5 Region Breakdown -->
+        <div class="pt-2 border-t border-slate-100">
+          <p class="text-xs font-bold text-slate-500 uppercase tracking-wider mb-2">Regional 24-hr PSI & PM2.5</p>
+          <div class="grid grid-cols-5 gap-2 text-center" id="region-cards">
+            <!-- Region items dynamically injected -->
           </div>
-          <div class="bg-slate-50 rounded-xl p-2">
-            <span class="text-[10px] uppercase font-bold text-slate-400 block">South</span>
-            <span id="psi-south" class="text-sm font-bold text-slate-800">--</span>
+        </div>
+      </div>
+
+      <!-- Extended Pollutants Sub-indices Card -->
+      <div class="bg-white rounded-2xl p-4 shadow-sm border border-slate-200/80 space-y-2.5">
+        <h3 class="text-xs font-bold text-slate-500 uppercase tracking-wider">Islandwide Pollutant Readings</h3>
+        <div class="grid grid-cols-2 sm:grid-cols-4 gap-2 text-center" id="pollutants-grid">
+          <div class="bg-slate-50 p-2.5 rounded-xl border border-slate-100">
+            <span class="text-[10px] uppercase font-bold text-slate-400 block">PM2.5 (24h)</span>
+            <span id="pm25-stat" class="text-base font-extrabold text-slate-800">--</span>
           </div>
-          <div class="bg-slate-50 rounded-xl p-2">
-            <span class="text-[10px] uppercase font-bold text-slate-400 block">East</span>
-            <span id="psi-east" class="text-sm font-bold text-slate-800">--</span>
+          <div class="bg-slate-50 p-2.5 rounded-xl border border-slate-100">
+            <span class="text-[10px] uppercase font-bold text-slate-400 block">PM10 (24h)</span>
+            <span id="pm10-stat" class="text-base font-extrabold text-slate-800">--</span>
           </div>
-          <div class="bg-slate-50 rounded-xl p-2">
-            <span class="text-[10px] uppercase font-bold text-slate-400 block">West</span>
-            <span id="psi-west" class="text-sm font-bold text-slate-800">--</span>
+          <div class="bg-slate-50 p-2.5 rounded-xl border border-slate-100">
+            <span class="text-[10px] uppercase font-bold text-slate-400 block">Ozone (O3)</span>
+            <span id="o3-stat" class="text-base font-extrabold text-slate-800">--</span>
+          </div>
+          <div class="bg-slate-50 p-2.5 rounded-xl border border-slate-100">
+            <span class="text-[10px] uppercase font-bold text-slate-400 block">Carbon Monoxide</span>
+            <span id="co-stat" class="text-base font-extrabold text-slate-800">--</span>
+          </div>
+        </div>
+      </div>
+
+    </div>
+
+    <!-- TAB 2: WEATHER & 4-DAY FORECAST -->
+    <div id="tab-content-forecast" class="space-y-3 hidden">
+      
+      <!-- 24h Outlook Card -->
+      <div class="bg-white rounded-2xl p-5 shadow-sm border border-slate-200/80 space-y-3">
+        <span class="text-xs font-bold text-slate-400 uppercase tracking-wider">24-Hour Forecast</span>
+        <div class="flex items-center gap-3">
+          <span id="weather-emoji-big" class="text-4xl">🌤️</span>
+          <div>
+            <h3 id="forecast-summary-text" class="text-lg font-bold text-slate-900 leading-tight">Loading...</h3>
+            <p class="text-xs text-slate-400 font-medium">Islandwide general conditions</p>
+          </div>
+        </div>
+
+        <div class="grid grid-cols-3 gap-2.5 pt-2 border-t border-slate-100">
+          <div class="bg-slate-50 p-3 rounded-xl border border-slate-100 text-center">
+            <span class="text-[10px] uppercase font-bold text-slate-400 block mb-0.5">Temperature</span>
+            <span id="temp-stat" class="text-base font-extrabold text-slate-800">--</span>
+          </div>
+          <div class="bg-slate-50 p-3 rounded-xl border border-slate-100 text-center">
+            <span class="text-[10px] uppercase font-bold text-slate-400 block mb-0.5">Humidity</span>
+            <span id="hum-stat" class="text-base font-extrabold text-slate-800">--</span>
+          </div>
+          <div class="bg-slate-50 p-3 rounded-xl border border-slate-100 text-center">
+            <span class="text-[10px] uppercase font-bold text-slate-400 block mb-0.5">Wind</span>
+            <span id="wind-stat" class="text-base font-extrabold text-slate-800">--</span>
+          </div>
+        </div>
+      </div>
+
+      <!-- 4-Day Outlook -->
+      <div class="bg-white rounded-2xl p-4 shadow-sm border border-slate-200/80 space-y-3">
+        <h3 class="text-xs font-bold text-slate-500 uppercase tracking-wider">4-Day Extended Outlook</h3>
+        <div class="space-y-2" id="four-day-container">
+          <!-- 4 Day items injected -->
+        </div>
+      </div>
+
+    </div>
+
+    <!-- TAB 3: UV & HEAT -->
+    <div id="tab-content-uv" class="space-y-3 hidden">
+      <div class="bg-white rounded-2xl p-5 shadow-sm border border-slate-200/80 space-y-3">
+        <div class="flex justify-between items-start">
+          <div>
+            <span class="text-xs font-bold text-slate-400 uppercase tracking-wider">Live UV Index</span>
+            <div class="flex items-baseline gap-2 mt-1">
+              <span id="uv-current-val" class="text-5xl font-extrabold text-slate-900">--</span>
+              <span class="text-sm font-semibold text-slate-400">Index</span>
+            </div>
+          </div>
+          <span id="uv-badge" class="px-3.5 py-1.5 rounded-full text-xs font-bold bg-slate-100 text-slate-600">
+            Checking...
+          </span>
+        </div>
+
+        <div id="uv-advisory-box" class="p-3 rounded-xl text-xs leading-relaxed font-medium bg-amber-50 text-amber-900 border border-amber-100">
+          Sun protection guidelines loading...
+        </div>
+
+        <!-- Hourly UV Trend -->
+        <div class="pt-2 border-t border-slate-100">
+          <p class="text-xs font-bold text-slate-500 uppercase tracking-wider mb-2">Today's Hourly UV Trend</p>
+          <div class="space-y-2" id="uv-hourly-bars">
+            <!-- Hourly bars injected -->
           </div>
         </div>
       </div>
     </div>
 
-    <!-- Weather Forecast Card -->
-    <div class="bg-white rounded-2xl p-5 shadow-sm border border-slate-100 space-y-3">
-      <span class="text-xs font-bold text-slate-400 uppercase tracking-wider">24-Hour Weather Forecast</span>
-      <div class="flex items-center gap-3">
-        <div class="w-12 h-12 rounded-2xl bg-amber-50 flex items-center justify-center text-2xl shadow-inner">
-          🌤️
+    <!-- TAB 4: 47 TOWNS NOWCAST -->
+    <div id="tab-content-towns" class="space-y-3 hidden">
+      <div class="bg-white rounded-2xl p-4 shadow-sm border border-slate-200/80 space-y-3">
+        <div class="flex justify-between items-center">
+          <h3 class="text-xs font-bold text-slate-500 uppercase tracking-wider">2-Hour Localized Nowcasts</h3>
+          <span id="nowcast-period" class="text-[11px] font-semibold text-slate-500">Next 2 hours</span>
         </div>
-        <div>
-          <p id="weather-forecast" class="text-base font-bold text-slate-900 leading-snug">Loading forecast...</p>
-          <p class="text-xs text-slate-400 font-medium">Islandwide Outlook</p>
+
+        <!-- Search Town -->
+        <div class="relative">
+          <input type="text" id="town-search-input" oninput="filterTowns()" placeholder="Search town (e.g., Woodlands, Sentosa)..." class="w-full bg-slate-50 border border-slate-200 rounded-xl px-3 py-2 text-xs text-slate-800 placeholder-slate-400 focus:outline-none focus:ring-2 focus:ring-blue-500 focus:bg-white">
         </div>
-      </div>
-      <div class="grid grid-cols-2 gap-3 pt-2">
-        <div class="bg-slate-50 p-3.5 rounded-xl border border-slate-100/60">
-          <span class="text-[11px] font-bold text-slate-400 uppercase block mb-1">Temperature</span>
-          <span id="temp-val" class="text-lg font-bold text-slate-800">--</span>
-        </div>
-        <div class="bg-slate-50 p-3.5 rounded-xl border border-slate-100/60">
-          <span class="text-[11px] font-bold text-slate-400 uppercase block mb-1">Humidity</span>
-          <span id="humidity-val" class="text-lg font-bold text-slate-800">--</span>
+
+        <div class="grid grid-cols-2 gap-2 max-h-96 overflow-y-auto pr-1" id="towns-grid">
+          <!-- 47 Towns injected -->
         </div>
       </div>
     </div>
 
-    <!-- Footer Note -->
-    <div class="text-center pt-2">
-      <p class="text-[11px] text-slate-400">Data provided live by data.gov.sg (National Environment Agency)</p>
-    </div>
-
-  </div>
+  </main>
 
   <script>
+    // ── Telegram Init ───────────────────────────────────────────────────────────
     const tg = window.Telegram?.WebApp;
     if (tg) {
       tg.expand();
       tg.ready();
     }
 
-    async function fetchData() {
-      try {
-        // Fetch PSI
-        const psiRes = await fetch("https://api-open.data.gov.sg/v2/real-time/api/psi");
-        const psiData = await psiRes.json();
-        const readings = psiData.data.items[0].readings.psi_twenty_four_hourly;
+    // ── Global State ────────────────────────────────────────────────────────────
+    let map = null;
+    let psiLayerGroup = null;
+    let weatherLayerGroup = null;
+    let currentMapLayer = 'psi';
+    let globalTownsData = [];
 
-        document.getElementById('psi-central').textContent = readings.central;
-        document.getElementById('psi-north').textContent = readings.north;
-        document.getElementById('psi-south').textContent = readings.south;
-        document.getElementById('psi-east').textContent = readings.east;
-        document.getElementById('psi-west').textContent = readings.west;
+    // Region Lat/Long Coordinates from NEA
+    const REGION_COORDS = {
+      central: { lat: 1.35735, lng: 103.82, name: "Central Region" },
+      north:   { lat: 1.41803, lng: 103.82, name: "North Region" },
+      south:   { lat: 1.29587, lng: 103.82, name: "South Region" },
+      east:    { lat: 1.35735, lng: 103.94, name: "East Region" },
+      west:    { lat: 1.35735, lng: 103.70, name: "West Region" }
+    };
 
-        const maxPsi = Math.max(readings.central, readings.north, readings.south, readings.east, readings.west);
-        document.getElementById('max-psi').textContent = maxPsi;
+    // ── Helpers ─────────────────────────────────────────────────────────────────
+    function getPsiColor(val) {
+      if (val <= 50) return { bg: '#10b981', label: 'Good 🟢', badgeClass: 'bg-emerald-100 text-emerald-800 border-emerald-200' };
+      if (val <= 100) return { bg: '#f59e0b', label: 'Moderate 🟡', badgeClass: 'bg-amber-100 text-amber-800 border-amber-200' };
+      if (val <= 200) return { bg: '#f97316', label: 'Unhealthy 🟠', badgeClass: 'bg-orange-100 text-orange-800 border-orange-200' };
+      if (val <= 300) return { bg: '#ef4444', label: 'Very Unhealthy 🔴', badgeClass: 'bg-rose-100 text-rose-800 border-rose-200' };
+      return { bg: '#8b5cf6', label: 'Hazardous 🟣', badgeClass: 'bg-purple-100 text-purple-800 border-purple-200' };
+    }
 
-        const badge = document.getElementById('overall-badge');
-        if (maxPsi <= 50) {
-          badge.textContent = "Good 🟢";
-          badge.className = "px-3 py-1 rounded-full text-xs font-bold bg-emerald-50 text-emerald-700 border border-emerald-200/50";
-        } else if (maxPsi <= 100) {
-          badge.textContent = "Moderate 🟡";
-          badge.className = "px-3 py-1 rounded-full text-xs font-bold bg-amber-50 text-amber-700 border border-amber-200/50";
-        } else {
-          badge.textContent = "Unhealthy 🔴";
-          badge.className = "px-3 py-1 rounded-full text-xs font-bold bg-rose-50 text-rose-700 border border-rose-200/50";
-        }
+    function getWeatherEmoji(text) {
+      const t = (text || "").toLowerCase();
+      if (t.includes("thunder") || t.includes("lightning")) return "⛈️";
+      if (t.includes("heavy rain")) return "🌧️";
+      if (t.includes("showers") || t.includes("rain")) return "🌦️";
+      if (t.includes("cloudy")) return "☁️";
+      if (t.includes("windy")) return "💨";
+      if (t.includes("night")) return "🌙";
+      return "☀️";
+    }
 
-        // Fetch Weather
-        const weatherRes = await fetch("https://api-open.data.gov.sg/v2/real-time/api/twenty-four-hr-forecast");
-        const weatherData = await weatherRes.json();
-        const record = weatherData.data.records[0];
-        const general = record.general;
+    // ── Map Initialization ──────────────────────────────────────────────────────
+    function initMap() {
+      if (map) return;
+      
+      // Center of Singapore
+      map = L.map('map', {
+        center: [1.3521, 103.8198],
+        zoom: 11,
+        minZoom: 10,
+        maxZoom: 14,
+        zoomControl: false
+      });
 
-        document.getElementById('weather-forecast').textContent = general.forecast?.text ?? general.forecast ?? "Fair";
-        document.getElementById('temp-val').textContent = `${general.temperature?.low}°C - ${general.temperature?.high}°C`;
-        document.getElementById('humidity-val').textContent = `${general.relativeHumidity?.low}% - ${general.relativeHumidity?.high}%`;
+      L.control.zoom({ position: 'topright' }).addTo(map);
 
-      } catch (e) {
-        console.error("Fetch error:", e);
+      // Clean, aesthetic CartoDB Positron basemap tiles
+      L.tileLayer('https://{s}.basemaps.cartocdn.com/light_all/{z}/{x}/{y}{r}.png', {
+        attribution: '&copy; OpenStreetMap &copy; CARTO',
+        subdomains: 'abcd',
+        maxZoom: 19
+      }).addTo(map);
+
+      psiLayerGroup = L.layerGroup().addTo(map);
+      weatherLayerGroup = L.layerGroup();
+    }
+
+    function switchMapLayer(layer) {
+      currentMapLayer = layer;
+      if (tg?.HapticFeedback) tg.HapticFeedback.impactOccurred('light');
+
+      const btnPsi = document.getElementById('btn-layer-psi');
+      const btnWeather = document.getElementById('btn-layer-weather');
+      const indicator = document.getElementById('map-layer-indicator');
+      const legend = document.getElementById('psi-legend');
+
+      if (layer === 'psi') {
+        map.removeLayer(weatherLayerGroup);
+        map.addLayer(psiLayerGroup);
+        btnPsi.className = "px-2.5 py-1 rounded-lg bg-white text-blue-600 shadow-xs transition";
+        btnWeather.className = "px-2.5 py-1 rounded-lg text-slate-500 transition";
+        indicator.textContent = "Air Quality (PSI)";
+        indicator.className = "text-[11px] font-semibold text-blue-600 bg-blue-50 px-2 py-0.5 rounded-full";
+        legend.classList.remove('hidden');
+      } else {
+        map.removeLayer(psiLayerGroup);
+        map.addLayer(weatherLayerGroup);
+        btnWeather.className = "px-2.5 py-1 rounded-lg bg-white text-blue-600 shadow-xs transition";
+        btnPsi.className = "px-2.5 py-1 rounded-lg text-slate-500 transition";
+        indicator.textContent = "2h Town Weather Nowcast";
+        indicator.className = "text-[11px] font-semibold text-emerald-700 bg-emerald-50 px-2 py-0.5 rounded-full";
+        legend.classList.add('hidden');
       }
     }
 
-    fetchData();
+    // ── Tab Switching ───────────────────────────────────────────────────────────
+    function setTab(tab) {
+      if (tg?.HapticFeedback) tg.HapticFeedback.selectionChanged();
+      const tabs = ['psi', 'forecast', 'uv', 'towns'];
+      tabs.forEach(t => {
+        const content = document.getElementById(`tab-content-${t}`);
+        const btn = document.getElementById(`tab-btn-${t}`);
+        if (t === tab) {
+          content.classList.remove('hidden');
+          btn.className = "tab-pill active px-3.5 py-2 rounded-xl text-xs font-bold whitespace-nowrap bg-blue-600 text-white shadow-xs transition";
+        } else {
+          content.classList.add('hidden');
+          btn.className = "tab-pill px-3.5 py-2 rounded-xl text-xs font-bold whitespace-nowrap bg-white text-slate-600 border border-slate-200/80 shadow-xs transition";
+        }
+      });
+    }
+
+    // ── Data Fetching ───────────────────────────────────────────────────────────
+    async function refreshAllData() {
+      const icon = document.getElementById('refresh-icon');
+      icon.classList.add('animate-spin');
+      if (tg?.HapticFeedback) tg.HapticFeedback.notificationOccurred('success');
+
+      try {
+        await Promise.all([
+          loadPsiData(),
+          loadWeatherData(),
+          loadNowcastData(),
+          loadUvData()
+        ]);
+        document.getElementById('last-updated').textContent = new Date().toLocaleTimeString('en-SG', { hour: '2-digit', minute: '2-digit', hour12: true });
+      } catch (err) {
+        console.error("Refresh error:", err);
+      } finally {
+        setTimeout(() => icon.classList.remove('animate-spin'), 600);
+      }
+    }
+
+    // 1. PSI Data & Map Overlay
+    async function loadPsiData() {
+      const res = await fetch("https://api-open.data.gov.sg/v2/real-time/api/psi");
+      const json = await res.json();
+      const readings = json.data.items[0].readings;
+      const psi = readings.psi_twenty_four_hourly;
+      const pm25 = readings.pm25_twenty_four_hourly;
+      const pm10 = readings.pm10_twenty_four_hourly;
+      const o3 = readings.o3_sub_index;
+      const co = readings.co_sub_index;
+
+      psiLayerGroup.clearLayers();
+
+      const regions = ['central', 'north', 'south', 'east', 'west'];
+      let maxPsi = 0;
+      let regionCardsHtml = '';
+
+      regions.forEach(r => {
+        const val = psi[r] || 0;
+        if (val > maxPsi) maxPsi = val;
+        const colorInfo = getPsiColor(val);
+        const coord = REGION_COORDS[r];
+
+        // Add Circle Zone on Map
+        const circle = L.circle([coord.lat, coord.lng], {
+          color: colorInfo.bg,
+          fillColor: colorInfo.bg,
+          fillOpacity: 0.35,
+          radius: 3800,
+          weight: 2
+        }).addTo(psiLayerGroup);
+
+        // Add Number Badge Marker
+        const icon = L.divIcon({
+          className: '',
+          html: `<div class="custom-marker" style="background-color: ${colorInfo.bg}; color: white; width: 34px; height: 34px; font-size: 13px;">${val}</div>`,
+          iconSize: [34, 34],
+          iconAnchor: [17, 17]
+        });
+
+        const marker = L.marker([coord.lat, coord.lng], { icon: icon }).addTo(psiLayerGroup);
+
+        const popupContent = `
+          <div class="p-1 space-y-1">
+            <h4 class="font-bold text-sm text-slate-900">${coord.name}</h4>
+            <p class="text-xs font-semibold" style="color: ${colorInfo.bg}">${colorInfo.label}</p>
+            <div class="text-xs text-slate-600 pt-1 border-t border-slate-100 space-y-0.5">
+              <p>• <strong>24h PSI:</strong> ${val}</p>
+              <p>• <strong>PM2.5:</strong> ${pm25[r] || '--'} µg/m³</p>
+              <p>• <strong>PM10:</strong> ${pm10[r] || '--'} µg/m³</p>
+              <p>• <strong>O3 Sub-index:</strong> ${o3[r] || '--'}</p>
+            </div>
+          </div>
+        `;
+
+        circle.bindPopup(popupContent);
+        marker.bindPopup(popupContent);
+
+        // Regional Card below
+        regionCardsHtml += `
+          <div class="bg-slate-50 p-2 rounded-xl border border-slate-100 text-center">
+            <span class="text-[10px] uppercase font-bold text-slate-400 block">${r.slice(0, 4)}</span>
+            <span class="text-sm font-extrabold" style="color: ${colorInfo.bg}">${val}</span>
+            <span class="text-[9px] text-slate-400 block mt-0.5">${pm25[r]}µg</span>
+          </div>
+        `;
+      });
+
+      document.getElementById('region-cards').innerHTML = regionCardsHtml;
+      document.getElementById('hero-psi-val').textContent = maxPsi;
+
+      const maxInfo = getPsiColor(maxPsi);
+      const heroBadge = document.getElementById('hero-status-badge');
+      heroBadge.textContent = maxInfo.label;
+      heroBadge.className = `px-3.5 py-1.5 rounded-full text-xs font-bold border shadow-2xs ${maxInfo.badgeClass}`;
+
+      // Health Advisory text
+      const adv = document.getElementById('health-advisory');
+      if (maxPsi <= 50) {
+        adv.textContent = "🟢 Good air quality. Normal outdoor activities can be enjoyed by everyone.";
+        adv.className = "p-3 bg-emerald-50 border border-emerald-100 rounded-xl text-xs text-emerald-900 leading-relaxed font-medium";
+      } else if (maxPsi <= 100) {
+        adv.textContent = "🟡 Moderate air quality. Normal activities can continue for all individuals.";
+        adv.className = "p-3 bg-amber-50 border border-amber-100 rounded-xl text-xs text-amber-900 leading-relaxed font-medium";
+      } else {
+        adv.textContent = "🟠 Unhealthy haze conditions. Vulnerable groups, elderly, and children should reduce strenuous outdoor activity.";
+        adv.className = "p-3 bg-orange-50 border border-orange-100 rounded-xl text-xs text-orange-900 leading-relaxed font-medium";
+      }
+
+      // Pollutant stats
+      document.getElementById('pm25-stat').textContent = (pm25.central || '--') + ' µg/m³';
+      document.getElementById('pm10-stat').textContent = (pm10.central || '--') + ' µg/m³';
+      document.getElementById('o3-stat').textContent = (o3.central || '--');
+      document.getElementById('co-stat').textContent = (co.central || '--');
+    }
+
+    // 2. Weather 24h & 4-Day
+    async function loadWeatherData() {
+      const [res24, res4] = await Promise.all([
+        fetch("https://api-open.data.gov.sg/v2/real-time/api/twenty-four-hr-forecast"),
+        fetch("https://api-open.data.gov.sg/v2/real-time/api/four-day-outlook")
+      ]);
+      const json24 = await res24.json();
+      const json4 = await res4.json();
+
+      const general = json24.data.records[0].general;
+      const forecastText = general.forecast?.text ?? general.forecast ?? "Fair";
+      
+      document.getElementById('weather-emoji-big').textContent = getWeatherEmoji(forecastText);
+      document.getElementById('forecast-summary-text').textContent = forecastText;
+      document.getElementById('temp-stat').textContent = `${general.temperature?.low}° - ${general.temperature?.high}°C`;
+      document.getElementById('hum-stat').textContent = `${general.relativeHumidity?.low}% - ${general.relativeHumidity?.high}%`;
+      document.getElementById('wind-stat').textContent = `${general.wind?.direction ?? ''} ${general.wind?.speed?.low ?? ''}-${general.wind?.speed?.high ?? ''}km/h`;
+
+      // 4-Day Outlook
+      const outlooks = json4.data.records[0]?.forecasts ?? [];
+      let fourDayHtml = '';
+      outlooks.forEach(d => {
+        const text = d.forecast?.text ?? d.forecast?.summary ?? "Fair";
+        const emoji = getWeatherEmoji(text);
+        fourDayHtml += `
+          <div class="flex items-center justify-between p-3 bg-slate-50 rounded-xl border border-slate-100">
+            <div class="flex items-center gap-2.5">
+              <span class="text-2xl">${emoji}</span>
+              <div>
+                <p class="text-xs font-bold text-slate-800">${d.day}</p>
+                <p class="text-[11px] text-slate-500 font-medium">${text}</p>
+              </div>
+            </div>
+            <div class="text-right">
+              <span class="text-xs font-extrabold text-slate-800">${d.temperature?.low}° - ${d.temperature?.high}°C</span>
+              <span class="text-[10px] text-slate-400 block">${d.relativeHumidity?.low}%-${d.relativeHumidity?.high}% Hum</span>
+            </div>
+          </div>
+        `;
+      });
+      document.getElementById('four-day-container').innerHTML = fourDayHtml;
+    }
+
+    // 3. 2-Hour Nowcasts (Map Pins for 47 Towns)
+    async function loadNowcastData() {
+      const res = await fetch("https://api-open.data.gov.sg/v2/real-time/api/two-hr-forecast");
+      const json = await res.json();
+      
+      const areas = json.data.area_metadata || [];
+      const item = json.data.items[0];
+      const forecasts = item.forecasts || [];
+      const period = item.valid_period?.text || "Next 2 hours";
+      document.getElementById('nowcast-period').textContent = period;
+
+      weatherLayerGroup.clearLayers();
+      globalTownsData = [];
+
+      areas.forEach(a => {
+        const fc = forecasts.find(f => f.area === a.name);
+        const forecastText = fc?.forecast || "Fair";
+        const emoji = getWeatherEmoji(forecastText);
+
+        globalTownsData.push({
+          name: a.name,
+          forecast: forecastText,
+          emoji: emoji,
+          lat: a.label_location.latitude,
+          lng: a.label_location.longitude
+        });
+
+        // Add Map Marker Pin for Town
+        const markerIcon = L.divIcon({
+          className: '',
+          html: `<div class="custom-marker bg-white text-slate-800 px-1.5 py-0.5 rounded-lg shadow-sm border border-slate-200 text-xs flex items-center gap-1"><span class="text-sm">${emoji}</span><span class="font-bold text-[10px]">${a.name}</span></div>`,
+          iconSize: [80, 24],
+          iconAnchor: [40, 12]
+        });
+
+        const townMarker = L.marker([a.label_location.latitude, a.label_location.longitude], { icon: markerIcon }).addTo(weatherLayerGroup);
+        townMarker.bindPopup(`
+          <div class="p-1 space-y-1">
+            <h4 class="font-bold text-sm text-slate-900">${a.name}</h4>
+            <p class="text-xs font-semibold text-blue-600">${emoji} ${forecastText}</p>
+            <p class="text-[10px] text-slate-400">Valid: ${period}</p>
+          </div>
+        `);
+      });
+
+      renderTownsGrid(globalTownsData);
+    }
+
+    function renderTownsGrid(towns) {
+      let html = '';
+      towns.forEach(t => {
+        html += `
+          <div class="bg-slate-50 p-2.5 rounded-xl border border-slate-100 flex items-center justify-between">
+            <div class="truncate mr-1">
+              <span class="text-xs font-bold text-slate-800 block truncate">${t.name}</span>
+              <span class="text-[10px] text-slate-500 truncate block">${t.forecast}</span>
+            </div>
+            <span class="text-xl shrink-0">${t.emoji}</span>
+          </div>
+        `;
+      });
+      document.getElementById('towns-grid').innerHTML = html;
+    }
+
+    function filterTowns() {
+      const query = document.getElementById('town-search-input').value.toLowerCase();
+      const filtered = globalTownsData.filter(t => t.name.toLowerCase().includes(query));
+      renderTownsGrid(filtered);
+    }
+
+    // 4. UV Index
+    async function loadUvData() {
+      const res = await fetch("https://api-open.data.gov.sg/v2/real-time/api/uv");
+      const json = await res.json();
+      const indices = json.data.records[0]?.index || [];
+      if (indices.length === 0) return;
+
+      const current = indices[0];
+      document.getElementById('uv-current-val').textContent = current.value;
+
+      const badge = document.getElementById('uv-badge');
+      const advisory = document.getElementById('uv-advisory-box');
+      const val = current.value;
+
+      if (val <= 2) {
+        badge.textContent = "Low 🟢";
+        badge.className = "px-3.5 py-1.5 rounded-full text-xs font-bold bg-emerald-100 text-emerald-800";
+        advisory.textContent = "🟢 Minimal protection required. You can safely stay outdoors.";
+        advisory.className = "p-3 rounded-xl text-xs leading-relaxed font-medium bg-emerald-50 text-emerald-900 border border-emerald-100";
+      } else if (val <= 5) {
+        badge.textContent = "Moderate 🟡";
+        badge.className = "px-3.5 py-1.5 rounded-full text-xs font-bold bg-amber-100 text-amber-800";
+        advisory.textContent = "🟡 Seek shade during midday hours. Wear sunglasses and SPF 30+ sunscreen.";
+        advisory.className = "p-3 rounded-xl text-xs leading-relaxed font-medium bg-amber-50 text-amber-900 border border-amber-100";
+      } else if (val <= 7) {
+        badge.textContent = "High 🟠";
+        badge.className = "px-3.5 py-1.5 rounded-full text-xs font-bold bg-orange-100 text-orange-800";
+        advisory.textContent = "🟠 Protection needed. Reduce sun exposure between 11 AM and 3 PM. Wear protective clothing.";
+        advisory.className = "p-3 rounded-xl text-xs leading-relaxed font-medium bg-orange-50 text-orange-900 border border-orange-100";
+      } else {
+        badge.textContent = "Very High / Extreme 🔴";
+        badge.className = "px-3.5 py-1.5 rounded-full text-xs font-bold bg-rose-100 text-rose-800";
+        advisory.textContent = "🔴 Take full precautions. Avoid being out in direct sunlight during peak noon hours.";
+        advisory.className = "p-3 rounded-xl text-xs leading-relaxed font-medium bg-rose-50 text-rose-900 border border-rose-100";
+      }
+
+      // Hourly Trend Bars
+      let barsHtml = '';
+      const recent = indices.slice(0, 7);
+      recent.forEach(item => {
+        const time = new Date(item.hour).toLocaleTimeString('en-SG', { hour: '2-digit', minute: '2-digit', hour12: true, timeZone: 'Asia/Singapore' });
+        const pct = Math.min(100, Math.round((item.value / 12) * 100));
+        let barColor = 'bg-emerald-500';
+        if (item.value > 2) barColor = 'bg-amber-400';
+        if (item.value > 5) barColor = 'bg-orange-500';
+        if (item.value > 7) barColor = 'bg-rose-500';
+
+        barsHtml += `
+          <div class="flex items-center gap-3 text-xs font-medium">
+            <span class="w-16 text-slate-400 shrink-0">${time}</span>
+            <div class="w-full bg-slate-100 h-3 rounded-full overflow-hidden">
+              <div class="${barColor} h-full rounded-full transition-all duration-500" style="width: ${pct}%"></div>
+            </div>
+            <span class="w-8 text-right font-bold text-slate-700">${item.value}</span>
+          </div>
+        `;
+      });
+      document.getElementById('uv-hourly-bars').innerHTML = barsHtml;
+    }
+
+    // ── Boot ────────────────────────────────────────────────────────────────────
+    window.addEventListener('DOMContentLoaded', () => {
+      initMap();
+      refreshAllData();
+    });
   </script>
 </body>
 </html>
