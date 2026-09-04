@@ -33,6 +33,7 @@
       border-radius: 1rem;
       box-shadow: 0 10px 25px -5px rgba(0, 0, 0, 0.1), 0 8px 10px -6px rgba(0, 0, 0, 0.1);
       font-family: 'Plus Jakarta Sans', sans-serif;
+      padding: 4px;
     }
     .custom-marker {
       display: flex;
@@ -43,14 +44,8 @@
       box-shadow: 0 4px 6px -1px rgba(0, 0, 0, 0.1);
       border: 2px solid white;
     }
-    /* Hide scrollbar for tabs */
-    .no-scrollbar::-webkit-scrollbar {
-      display: none;
-    }
-    .no-scrollbar {
-      -ms-overflow-style: none;
-      scrollbar-width: none;
-    }
+    .no-scrollbar::-webkit-scrollbar { display: none; }
+    .no-scrollbar { -ms-overflow-style: none; scrollbar-width: none; }
   </style>
 </head>
 <body class="bg-slate-100 text-slate-800 antialiased min-h-screen pb-12">
@@ -80,7 +75,7 @@
     <div class="bg-white rounded-2xl p-3 shadow-sm border border-slate-200/80 space-y-2.5">
       <div class="flex items-center justify-between px-1">
         <div class="flex items-center gap-1.5">
-          <span class="text-xs font-bold uppercase tracking-wider text-slate-400">Interactive Map</span>
+          <span class="text-xs font-bold uppercase tracking-wider text-slate-400">Map Overlay</span>
           <span id="map-layer-indicator" class="text-[11px] font-semibold text-blue-600 bg-blue-50 px-2 py-0.5 rounded-full">Air Quality (PSI)</span>
         </div>
         <!-- Map Layer Toggle Buttons -->
@@ -97,12 +92,15 @@
       <!-- Map Container -->
       <div id="map" class="shadow-inner border border-slate-100"></div>
 
-      <!-- Map Legend -->
+      <!-- Map Footer Info & Legend -->
       <div id="psi-legend" class="flex items-center justify-between px-2 pt-1 text-[11px] font-medium text-slate-600">
         <span class="flex items-center gap-1"><span class="w-2.5 h-2.5 rounded-full bg-emerald-500"></span> 0-50 Good</span>
         <span class="flex items-center gap-1"><span class="w-2.5 h-2.5 rounded-full bg-amber-400"></span> 51-100 Mod</span>
         <span class="flex items-center gap-1"><span class="w-2.5 h-2.5 rounded-full bg-orange-500"></span> 101-200 Unhealthy</span>
         <span class="flex items-center gap-1"><span class="w-2.5 h-2.5 rounded-full bg-rose-600"></span> 201+ Very Unhealthy</span>
+      </div>
+      <div id="weather-map-hint" class="hidden text-center text-[11px] text-slate-500 font-medium pt-1">
+        💡 Tap any icon on the map to view local town forecast & set as favorite.
       </div>
     </div>
 
@@ -111,14 +109,14 @@
       <button onclick="setTab('psi')" id="tab-btn-psi" class="tab-pill active px-3.5 py-2 rounded-xl text-xs font-bold whitespace-nowrap bg-blue-600 text-white shadow-xs transition">
         🌬️ Air Quality & Haze
       </button>
+      <button onclick="setTab('towns')" id="tab-btn-towns" class="tab-pill px-3.5 py-2 rounded-xl text-xs font-bold whitespace-nowrap bg-white text-slate-600 border border-slate-200/80 shadow-xs transition">
+        📍 Town Weather (47)
+      </button>
       <button onclick="setTab('forecast')" id="tab-btn-forecast" class="tab-pill px-3.5 py-2 rounded-xl text-xs font-bold whitespace-nowrap bg-white text-slate-600 border border-slate-200/80 shadow-xs transition">
-        🌤️ Weather & 4-Day
+        🌤️ 24h & 4-Day
       </button>
       <button onclick="setTab('uv')" id="tab-btn-uv" class="tab-pill px-3.5 py-2 rounded-xl text-xs font-bold whitespace-nowrap bg-white text-slate-600 border border-slate-200/80 shadow-xs transition">
-        ☀️ UV & Heat Index
-      </button>
-      <button onclick="setTab('towns')" id="tab-btn-towns" class="tab-pill px-3.5 py-2 rounded-xl text-xs font-bold whitespace-nowrap bg-white text-slate-600 border border-slate-200/80 shadow-xs transition">
-        📍 47 Towns
+        ☀️ UV Index
       </button>
     </div>
 
@@ -178,12 +176,66 @@
 
     </div>
 
-    <!-- TAB 2: WEATHER & 4-DAY FORECAST -->
-    <div id="tab-content-forecast" class="space-y-3 hidden">
+    <!-- TAB 2: DECLUTTERED TOWN WEATHER (47 TOWNS) -->
+    <div id="tab-content-towns" class="space-y-3 hidden">
       
-      <!-- 24h Outlook Card -->
+      <!-- Rain & Weather Overview Banner -->
+      <div id="weather-condition-summary" class="bg-white rounded-2xl p-4 shadow-sm border border-slate-200/80 space-y-2">
+        <div class="flex items-center justify-between">
+          <span class="text-xs font-bold uppercase tracking-wider text-slate-400">2-Hour Islandwide Snapshot</span>
+          <span id="nowcast-period" class="text-[11px] font-semibold text-blue-600 bg-blue-50 px-2.5 py-0.5 rounded-full">Next 2 hours</span>
+        </div>
+        <div class="flex flex-wrap gap-2 pt-1" id="condition-pills-container">
+          <!-- Condition pills injected -->
+        </div>
+      </div>
+
+      <!-- ⭐ Favorite / Pinned Town Card -->
+      <div id="fav-town-card" class="bg-gradient-to-r from-blue-500 to-indigo-600 text-white rounded-2xl p-4 shadow-md flex items-center justify-between">
+        <div class="space-y-0.5">
+          <div class="flex items-center gap-1.5">
+            <span class="text-amber-300 text-xs">⭐</span>
+            <span class="text-[11px] font-bold uppercase tracking-wider text-blue-100">My Neighborhood</span>
+          </div>
+          <h3 id="fav-town-name" class="text-lg font-bold text-white">Select a town</h3>
+          <p id="fav-town-forecast" class="text-xs text-blue-100">Tap ⭐ on any town card below to pin it here</p>
+        </div>
+        <span id="fav-town-emoji" class="text-3xl bg-white/20 p-2 rounded-xl backdrop-blur">📍</span>
+      </div>
+
+      <!-- Town Directory with Filters -->
+      <div class="bg-white rounded-2xl p-4 shadow-sm border border-slate-200/80 space-y-3">
+        
+        <!-- Region Filter Pills -->
+        <div class="flex items-center justify-between pb-1 border-b border-slate-100">
+          <span class="text-xs font-bold text-slate-500 uppercase tracking-wider">Regions</span>
+          <div class="flex gap-1 overflow-x-auto no-scrollbar py-0.5" id="region-filter-chips">
+            <button onclick="filterByRegion('all')" class="region-chip active px-2.5 py-1 rounded-lg text-xs font-bold bg-blue-50 text-blue-600" data-region="all">All (47)</button>
+            <button onclick="filterByRegion('Central')" class="region-chip px-2.5 py-1 rounded-lg text-xs font-semibold text-slate-500 hover:bg-slate-50" data-region="Central">Central</button>
+            <button onclick="filterByRegion('East')" class="region-chip px-2.5 py-1 rounded-lg text-xs font-semibold text-slate-500 hover:bg-slate-50" data-region="East">East</button>
+            <button onclick="filterByRegion('North')" class="region-chip px-2.5 py-1 rounded-lg text-xs font-semibold text-slate-500 hover:bg-slate-50" data-region="North">North</button>
+            <button onclick="filterByRegion('South')" class="region-chip px-2.5 py-1 rounded-lg text-xs font-semibold text-slate-500 hover:bg-slate-50" data-region="South">South</button>
+            <button onclick="filterByRegion('West')" class="region-chip px-2.5 py-1 rounded-lg text-xs font-semibold text-slate-500 hover:bg-slate-50" data-region="West">West</button>
+          </div>
+        </div>
+
+        <!-- Search Bar -->
+        <div class="relative">
+          <input type="text" id="town-search-input" oninput="handleTownSearch()" placeholder="Search any town (e.g. Bedok, Jurong, Woodlands)..." class="w-full bg-slate-50 border border-slate-200 rounded-xl px-3 py-2 text-xs text-slate-800 placeholder-slate-400 focus:outline-none focus:ring-2 focus:ring-blue-500 focus:bg-white">
+        </div>
+
+        <!-- Clean Compact Town Cards Grid -->
+        <div class="grid grid-cols-1 sm:grid-cols-2 gap-2 max-h-96 overflow-y-auto pr-1" id="towns-clean-list">
+          <!-- Towns rendered cleanly here -->
+        </div>
+      </div>
+
+    </div>
+
+    <!-- TAB 3: 24-HOUR & 4-DAY OUTLOOK -->
+    <div id="tab-content-forecast" class="space-y-3 hidden">
       <div class="bg-white rounded-2xl p-5 shadow-sm border border-slate-200/80 space-y-3">
-        <span class="text-xs font-bold text-slate-400 uppercase tracking-wider">24-Hour Forecast</span>
+        <span class="text-xs font-bold text-slate-400 uppercase tracking-wider">24-Hour Islandwide Outlook</span>
         <div class="flex items-center gap-3">
           <span id="weather-emoji-big" class="text-4xl">🌤️</span>
           <div>
@@ -215,10 +267,9 @@
           <!-- 4 Day items injected -->
         </div>
       </div>
-
     </div>
 
-    <!-- TAB 3: UV & HEAT -->
+    <!-- TAB 4: UV & HEAT -->
     <div id="tab-content-uv" class="space-y-3 hidden">
       <div class="bg-white rounded-2xl p-5 shadow-sm border border-slate-200/80 space-y-3">
         <div class="flex justify-between items-start">
@@ -238,7 +289,6 @@
           Sun protection guidelines loading...
         </div>
 
-        <!-- Hourly UV Trend -->
         <div class="pt-2 border-t border-slate-100">
           <p class="text-xs font-bold text-slate-500 uppercase tracking-wider mb-2">Today's Hourly UV Trend</p>
           <div class="space-y-2" id="uv-hourly-bars">
@@ -248,43 +298,44 @@
       </div>
     </div>
 
-    <!-- TAB 4: 47 TOWNS NOWCAST -->
-    <div id="tab-content-towns" class="space-y-3 hidden">
-      <div class="bg-white rounded-2xl p-4 shadow-sm border border-slate-200/80 space-y-3">
-        <div class="flex justify-between items-center">
-          <h3 class="text-xs font-bold text-slate-500 uppercase tracking-wider">2-Hour Localized Nowcasts</h3>
-          <span id="nowcast-period" class="text-[11px] font-semibold text-slate-500">Next 2 hours</span>
-        </div>
-
-        <!-- Search Town -->
-        <div class="relative">
-          <input type="text" id="town-search-input" oninput="filterTowns()" placeholder="Search town (e.g., Woodlands, Sentosa)..." class="w-full bg-slate-50 border border-slate-200 rounded-xl px-3 py-2 text-xs text-slate-800 placeholder-slate-400 focus:outline-none focus:ring-2 focus:ring-blue-500 focus:bg-white">
-        </div>
-
-        <div class="grid grid-cols-2 gap-2 max-h-96 overflow-y-auto pr-1" id="towns-grid">
-          <!-- 47 Towns injected -->
-        </div>
-      </div>
-    </div>
-
   </main>
 
   <script>
-    // ── Telegram Init ───────────────────────────────────────────────────────────
+    // ── Telegram Web App ────────────────────────────────────────────────────────
     const tg = window.Telegram?.WebApp;
     if (tg) {
       tg.expand();
       tg.ready();
     }
 
-    // ── Global State ────────────────────────────────────────────────────────────
+    // ── Global State & Regions Mapping ──────────────────────────────────────────
     let map = null;
     let psiLayerGroup = null;
     let weatherLayerGroup = null;
     let currentMapLayer = 'psi';
-    let globalTownsData = [];
+    let globalTowns = [];
+    let selectedRegionFilter = 'all';
 
-    // Region Lat/Long Coordinates from NEA
+    // 47 Towns mapped to Singapore 5 Regions
+    const TOWN_REGIONS = {
+      "Woodlands": "North", "Sembawang": "North", "Yishun": "North", 
+      "Mandai": "North", "Sungei Kadut": "North", "Lim Chu Kang": "North", "Seletar": "North",
+      "City": "South", "Bukit Merah": "South", "Queenstown": "South", 
+      "Sentosa": "South", "Southern Islands": "South", "Tanglin": "South", "Marine Parade": "South",
+      "Bedok": "East", "Changi": "East", "Pasir Ris": "East", 
+      "Tampines": "East", "Paya Lebar": "East", "Geylang": "East", 
+      "Pulau Ubin": "East", "Pulau Tekong": "East",
+      "Jurong East": "West", "Jurong West": "West", "Boon Lay": "West", 
+      "Pioneer": "West", "Tuas": "West", "Bukit Batok": "West", 
+      "Bukit Panjang": "West", "Choa Chu Kang": "West", "Clementi": "West", 
+      "Tengah": "West", "Western Islands": "West", "Western Water Catchment": "West", 
+      "Jalan Bahar": "West", "Jurong Island": "West",
+      "Ang Mo Kio": "Central", "Bishan": "Central", "Toa Payoh": "Central", 
+      "Serangoon": "Central", "Novena": "Central", "Kallang": "Central", 
+      "Bukit Timah": "Central", "Central Water Catchment": "Central", 
+      "Hougang": "Central", "Sengkang": "Central", "Punggol": "Central"
+    };
+
     const REGION_COORDS = {
       central: { lat: 1.35735, lng: 103.82, name: "Central Region" },
       north:   { lat: 1.41803, lng: 103.82, name: "North Region" },
@@ -313,11 +364,9 @@
       return "☀️";
     }
 
-    // ── Map Initialization ──────────────────────────────────────────────────────
+    // ── Map Setup ───────────────────────────────────────────────────────────────
     function initMap() {
       if (map) return;
-      
-      // Center of Singapore
       map = L.map('map', {
         center: [1.3521, 103.8198],
         zoom: 11,
@@ -328,7 +377,6 @@
 
       L.control.zoom({ position: 'topright' }).addTo(map);
 
-      // Clean, aesthetic CartoDB Positron basemap tiles
       L.tileLayer('https://{s}.basemaps.cartocdn.com/light_all/{z}/{x}/{y}{r}.png', {
         attribution: '&copy; OpenStreetMap &copy; CARTO',
         subdomains: 'abcd',
@@ -347,6 +395,7 @@
       const btnWeather = document.getElementById('btn-layer-weather');
       const indicator = document.getElementById('map-layer-indicator');
       const legend = document.getElementById('psi-legend');
+      const hint = document.getElementById('weather-map-hint');
 
       if (layer === 'psi') {
         map.removeLayer(weatherLayerGroup);
@@ -356,21 +405,23 @@
         indicator.textContent = "Air Quality (PSI)";
         indicator.className = "text-[11px] font-semibold text-blue-600 bg-blue-50 px-2 py-0.5 rounded-full";
         legend.classList.remove('hidden');
+        hint.classList.add('hidden');
       } else {
         map.removeLayer(psiLayerGroup);
         map.addLayer(weatherLayerGroup);
         btnWeather.className = "px-2.5 py-1 rounded-lg bg-white text-blue-600 shadow-xs transition";
         btnPsi.className = "px-2.5 py-1 rounded-lg text-slate-500 transition";
-        indicator.textContent = "2h Town Weather Nowcast";
+        indicator.textContent = "2h Weather Pins (47 Towns)";
         indicator.className = "text-[11px] font-semibold text-emerald-700 bg-emerald-50 px-2 py-0.5 rounded-full";
         legend.classList.add('hidden');
+        hint.classList.remove('hidden');
       }
     }
 
     // ── Tab Switching ───────────────────────────────────────────────────────────
     function setTab(tab) {
       if (tg?.HapticFeedback) tg.HapticFeedback.selectionChanged();
-      const tabs = ['psi', 'forecast', 'uv', 'towns'];
+      const tabs = ['psi', 'towns', 'forecast', 'uv'];
       tabs.forEach(t => {
         const content = document.getElementById(`tab-content-${t}`);
         const btn = document.getElementById(`tab-btn-${t}`);
@@ -384,7 +435,7 @@
       });
     }
 
-    // ── Data Fetching ───────────────────────────────────────────────────────────
+    // ── Data Refresh ────────────────────────────────────────────────────────────
     async function refreshAllData() {
       const icon = document.getElementById('refresh-icon');
       icon.classList.add('animate-spin');
@@ -393,11 +444,12 @@
       try {
         await Promise.all([
           loadPsiData(),
-          loadWeatherData(),
           loadNowcastData(),
+          loadWeatherData(),
           loadUvData()
         ]);
         document.getElementById('last-updated').textContent = new Date().toLocaleTimeString('en-SG', { hour: '2-digit', minute: '2-digit', hour12: true });
+        updateFavoriteCard();
       } catch (err) {
         console.error("Refresh error:", err);
       } finally {
@@ -405,7 +457,7 @@
       }
     }
 
-    // 1. PSI Data & Map Overlay
+    // 1. PSI & Air Quality
     async function loadPsiData() {
       const res = await fetch("https://api-open.data.gov.sg/v2/real-time/api/psi");
       const json = await res.json();
@@ -428,16 +480,14 @@
         const colorInfo = getPsiColor(val);
         const coord = REGION_COORDS[r];
 
-        // Add Circle Zone on Map
         const circle = L.circle([coord.lat, coord.lng], {
           color: colorInfo.bg,
           fillColor: colorInfo.bg,
-          fillOpacity: 0.35,
+          fillOpacity: 0.3,
           radius: 3800,
           weight: 2
         }).addTo(psiLayerGroup);
 
-        // Add Number Badge Marker
         const icon = L.divIcon({
           className: '',
           html: `<div class="custom-marker" style="background-color: ${colorInfo.bg}; color: white; width: 34px; height: 34px; font-size: 13px;">${val}</div>`,
@@ -447,23 +497,21 @@
 
         const marker = L.marker([coord.lat, coord.lng], { icon: icon }).addTo(psiLayerGroup);
 
-        const popupContent = `
+        const popup = `
           <div class="p-1 space-y-1">
             <h4 class="font-bold text-sm text-slate-900">${coord.name}</h4>
             <p class="text-xs font-semibold" style="color: ${colorInfo.bg}">${colorInfo.label}</p>
             <div class="text-xs text-slate-600 pt-1 border-t border-slate-100 space-y-0.5">
               <p>• <strong>24h PSI:</strong> ${val}</p>
-              <p>• <strong>PM2.5:</strong> ${pm25[r] || '--'} µg/m³</p>
-              <p>• <strong>PM10:</strong> ${pm10[r] || '--'} µg/m³</p>
-              <p>• <strong>O3 Sub-index:</strong> ${o3[r] || '--'}</p>
+              <p>• <strong>PM2.5:</strong> ${pm25[r]} µg/m³</p>
+              <p>• <strong>PM10:</strong> ${pm10[r]} µg/m³</p>
+              <p>• <strong>O3:</strong> ${o3[r]}</p>
             </div>
           </div>
         `;
+        circle.bindPopup(popup);
+        marker.bindPopup(popup);
 
-        circle.bindPopup(popupContent);
-        marker.bindPopup(popupContent);
-
-        // Regional Card below
         regionCardsHtml += `
           <div class="bg-slate-50 p-2 rounded-xl border border-slate-100 text-center">
             <span class="text-[10px] uppercase font-bold text-slate-400 block">${r.slice(0, 4)}</span>
@@ -481,7 +529,6 @@
       heroBadge.textContent = maxInfo.label;
       heroBadge.className = `px-3.5 py-1.5 rounded-full text-xs font-bold border shadow-2xs ${maxInfo.badgeClass}`;
 
-      // Health Advisory text
       const adv = document.getElementById('health-advisory');
       if (maxPsi <= 50) {
         adv.textContent = "🟢 Good air quality. Normal outdoor activities can be enjoyed by everyone.";
@@ -494,14 +541,174 @@
         adv.className = "p-3 bg-orange-50 border border-orange-100 rounded-xl text-xs text-orange-900 leading-relaxed font-medium";
       }
 
-      // Pollutant stats
       document.getElementById('pm25-stat').textContent = (pm25.central || '--') + ' µg/m³';
       document.getElementById('pm10-stat').textContent = (pm10.central || '--') + ' µg/m³';
       document.getElementById('o3-stat').textContent = (o3.central || '--');
       document.getElementById('co-stat').textContent = (co.central || '--');
     }
 
-    // 2. Weather 24h & 4-Day
+    // 2. 2-Hour Nowcasts (Decluttered Clean Pins & Groups)
+    async function loadNowcastData() {
+      const res = await fetch("https://api-open.data.gov.sg/v2/real-time/api/two-hr-forecast");
+      const json = await res.json();
+      
+      const areas = json.data.area_metadata || [];
+      const item = json.data.items[0];
+      const forecasts = item.forecasts || [];
+      const period = item.valid_period?.text || "Next 2 hours";
+      document.getElementById('nowcast-period').textContent = period;
+
+      weatherLayerGroup.clearLayers();
+      globalTowns = [];
+
+      areas.forEach(a => {
+        const fc = forecasts.find(f => f.area === a.name);
+        const forecastText = fc?.forecast || "Fair";
+        const emoji = getWeatherEmoji(forecastText);
+        const region = TOWN_REGIONS[a.name] || "Central";
+
+        const townObj = {
+          name: a.name,
+          forecast: forecastText,
+          emoji: emoji,
+          region: region,
+          lat: a.label_location.latitude,
+          lng: a.label_location.longitude
+        };
+        globalTowns.push(townObj);
+
+        // Minimalist Compact 28px Weather Pin on Map (No overlapping text boxes!)
+        const markerIcon = L.divIcon({
+          className: '',
+          html: `<div class="w-7 h-7 rounded-full bg-white/95 backdrop-blur shadow-md border border-slate-200/90 flex items-center justify-center text-sm cursor-pointer hover:scale-110 active:scale-95 transition-transform">${emoji}</div>`,
+          iconSize: [28, 28],
+          iconAnchor: [14, 14]
+        });
+
+        const townMarker = L.marker([a.label_location.latitude, a.label_location.longitude], { icon: markerIcon }).addTo(weatherLayerGroup);
+        townMarker.bindPopup(`
+          <div class="p-1 space-y-1.5 min-w-[140px]">
+            <div class="flex items-center justify-between gap-2">
+              <h4 class="font-bold text-sm text-slate-900">${a.name}</h4>
+              <button onclick="setFavoriteTown('${a.name}')" class="text-xs text-amber-500 font-bold hover:underline">⭐ Pin</button>
+            </div>
+            <p class="text-xs font-semibold text-blue-600 flex items-center gap-1">
+              <span>${emoji}</span> ${forecastText}
+            </p>
+            <span class="inline-block text-[10px] font-semibold text-slate-500 bg-slate-100 px-2 py-0.5 rounded-full">${region} Region</span>
+          </div>
+        `);
+      });
+
+      renderConditionSummary();
+      renderFilteredTowns();
+    }
+
+    // Condition Summary Pills (e.g. Rain / Cloudy / Fair)
+    function renderConditionSummary() {
+      const counts = {};
+      globalTowns.forEach(t => {
+        counts[t.forecast] = (counts[t.forecast] || 0) + 1;
+      });
+
+      let pillsHtml = '';
+      Object.keys(counts).forEach(cond => {
+        const emoji = getWeatherEmoji(cond);
+        const count = counts[cond];
+        const isRain = cond.toLowerCase().includes('rain') || cond.toLowerCase().includes('thunder');
+        const bg = isRain ? 'bg-rose-50 text-rose-700 border-rose-200' : 'bg-slate-50 text-slate-700 border-slate-200';
+        
+        pillsHtml += `
+          <div class="px-2.5 py-1 rounded-xl border text-xs font-semibold flex items-center gap-1.5 ${bg}">
+            <span>${emoji}</span>
+            <span>${cond}:</span>
+            <strong class="font-extrabold">${count}</strong>
+          </div>
+        `;
+      });
+      document.getElementById('condition-pills-container').innerHTML = pillsHtml;
+    }
+
+    // Render Filtered Towns List
+    function renderFilteredTowns() {
+      const search = document.getElementById('town-search-input').value.toLowerCase();
+      const favTown = getFavoriteTown();
+
+      let filtered = globalTowns.filter(t => {
+        const matchRegion = (selectedRegionFilter === 'all' || t.region === selectedRegionFilter);
+        const matchSearch = t.name.toLowerCase().includes(search);
+        return matchRegion && matchSearch;
+      });
+
+      let html = '';
+      if (filtered.length === 0) {
+        html = '<div class="col-span-2 text-center py-6 text-xs text-slate-400">No towns matching your filter.</div>';
+      } else {
+        filtered.forEach(t => {
+          const isFav = (t.name === favTown);
+          html += `
+            <div class="bg-slate-50/80 hover:bg-slate-50 p-2.5 rounded-xl border border-slate-100 flex items-center justify-between transition">
+              <div class="truncate mr-2">
+                <div class="flex items-center gap-1.5">
+                  <span class="text-xs font-bold text-slate-800 truncate">${t.name}</span>
+                  <span class="text-[9px] font-bold text-slate-400 uppercase bg-slate-200/60 px-1.5 py-0.2 rounded-md">${t.region}</span>
+                </div>
+                <span class="text-[11px] text-slate-500 truncate block mt-0.5">${t.forecast}</span>
+              </div>
+              <div class="flex items-center gap-2 shrink-0">
+                <span class="text-xl">${t.emoji}</span>
+                <button onclick="setFavoriteTown('${t.name}')" class="text-sm ${isFav ? 'text-amber-400 scale-110' : 'text-slate-300 hover:text-amber-400'} transition" title="Pin as favorite">
+                  ★
+                </button>
+              </div>
+            </div>
+          `;
+        });
+      }
+      document.getElementById('towns-clean-list').innerHTML = html;
+    }
+
+    function filterByRegion(region) {
+      selectedRegionFilter = region;
+      if (tg?.HapticFeedback) tg.HapticFeedback.selectionChanged();
+
+      document.querySelectorAll('.region-chip').forEach(btn => {
+        if (btn.getAttribute('data-region') === region) {
+          btn.className = "region-chip active px-2.5 py-1 rounded-lg text-xs font-bold bg-blue-50 text-blue-600";
+        } else {
+          btn.className = "region-chip px-2.5 py-1 rounded-lg text-xs font-semibold text-slate-500 hover:bg-slate-50";
+        }
+      });
+      renderFilteredTowns();
+    }
+
+    function handleTownSearch() {
+      renderFilteredTowns();
+    }
+
+    // ⭐ Favorite Neighborhood Feature
+    function getFavoriteTown() {
+      return localStorage.getItem('sg_nea_fav_town') || 'City';
+    }
+
+    function setFavoriteTown(townName) {
+      localStorage.setItem('sg_nea_fav_town', townName);
+      if (tg?.HapticFeedback) tg.HapticFeedback.notificationOccurred('success');
+      updateFavoriteCard();
+      renderFilteredTowns();
+    }
+
+    function updateFavoriteCard() {
+      const favName = getFavoriteTown();
+      const town = globalTowns.find(t => t.name === favName);
+      if (town) {
+        document.getElementById('fav-town-name').textContent = town.name;
+        document.getElementById('fav-town-forecast').textContent = `${town.forecast} (${town.region} Region)`;
+        document.getElementById('fav-town-emoji').textContent = town.emoji;
+      }
+    }
+
+    // 3. Weather 24h & 4-Day
     async function loadWeatherData() {
       const [res24, res4] = await Promise.all([
         fetch("https://api-open.data.gov.sg/v2/real-time/api/twenty-four-hr-forecast"),
@@ -519,7 +726,6 @@
       document.getElementById('hum-stat').textContent = `${general.relativeHumidity?.low}% - ${general.relativeHumidity?.high}%`;
       document.getElementById('wind-stat').textContent = `${general.wind?.direction ?? ''} ${general.wind?.speed?.low ?? ''}-${general.wind?.speed?.high ?? ''}km/h`;
 
-      // 4-Day Outlook
       const outlooks = json4.data.records[0]?.forecasts ?? [];
       let fourDayHtml = '';
       outlooks.forEach(d => {
@@ -542,76 +748,6 @@
         `;
       });
       document.getElementById('four-day-container').innerHTML = fourDayHtml;
-    }
-
-    // 3. 2-Hour Nowcasts (Map Pins for 47 Towns)
-    async function loadNowcastData() {
-      const res = await fetch("https://api-open.data.gov.sg/v2/real-time/api/two-hr-forecast");
-      const json = await res.json();
-      
-      const areas = json.data.area_metadata || [];
-      const item = json.data.items[0];
-      const forecasts = item.forecasts || [];
-      const period = item.valid_period?.text || "Next 2 hours";
-      document.getElementById('nowcast-period').textContent = period;
-
-      weatherLayerGroup.clearLayers();
-      globalTownsData = [];
-
-      areas.forEach(a => {
-        const fc = forecasts.find(f => f.area === a.name);
-        const forecastText = fc?.forecast || "Fair";
-        const emoji = getWeatherEmoji(forecastText);
-
-        globalTownsData.push({
-          name: a.name,
-          forecast: forecastText,
-          emoji: emoji,
-          lat: a.label_location.latitude,
-          lng: a.label_location.longitude
-        });
-
-        // Add Map Marker Pin for Town
-        const markerIcon = L.divIcon({
-          className: '',
-          html: `<div class="custom-marker bg-white text-slate-800 px-1.5 py-0.5 rounded-lg shadow-sm border border-slate-200 text-xs flex items-center gap-1"><span class="text-sm">${emoji}</span><span class="font-bold text-[10px]">${a.name}</span></div>`,
-          iconSize: [80, 24],
-          iconAnchor: [40, 12]
-        });
-
-        const townMarker = L.marker([a.label_location.latitude, a.label_location.longitude], { icon: markerIcon }).addTo(weatherLayerGroup);
-        townMarker.bindPopup(`
-          <div class="p-1 space-y-1">
-            <h4 class="font-bold text-sm text-slate-900">${a.name}</h4>
-            <p class="text-xs font-semibold text-blue-600">${emoji} ${forecastText}</p>
-            <p class="text-[10px] text-slate-400">Valid: ${period}</p>
-          </div>
-        `);
-      });
-
-      renderTownsGrid(globalTownsData);
-    }
-
-    function renderTownsGrid(towns) {
-      let html = '';
-      towns.forEach(t => {
-        html += `
-          <div class="bg-slate-50 p-2.5 rounded-xl border border-slate-100 flex items-center justify-between">
-            <div class="truncate mr-1">
-              <span class="text-xs font-bold text-slate-800 block truncate">${t.name}</span>
-              <span class="text-[10px] text-slate-500 truncate block">${t.forecast}</span>
-            </div>
-            <span class="text-xl shrink-0">${t.emoji}</span>
-          </div>
-        `;
-      });
-      document.getElementById('towns-grid').innerHTML = html;
-    }
-
-    function filterTowns() {
-      const query = document.getElementById('town-search-input').value.toLowerCase();
-      const filtered = globalTownsData.filter(t => t.name.toLowerCase().includes(query));
-      renderTownsGrid(filtered);
     }
 
     // 4. UV Index
@@ -650,7 +786,6 @@
         advisory.className = "p-3 rounded-xl text-xs leading-relaxed font-medium bg-rose-50 text-rose-900 border border-rose-100";
       }
 
-      // Hourly Trend Bars
       let barsHtml = '';
       const recent = indices.slice(0, 7);
       recent.forEach(item => {
