@@ -654,6 +654,36 @@ function getMetabolicStage(elapsedHours) {
 }
 
 /**
+ * Helper to compute relative day label in Singapore Time (SGT)
+ */
+function getSGTRelativeDayStr(targetDate, nowDate = new Date()) {
+  const getSGTStr = (d) => new Intl.DateTimeFormat("en-CA", {
+    timeZone: "Asia/Singapore",
+    year: "numeric",
+    month: "2-digit",
+    day: "2-digit"
+  }).format(d instanceof Date ? d : new Date(d));
+
+  const targetStr = getSGTStr(targetDate);
+  const nowStr = getSGTStr(nowDate);
+
+  const diffDays = Math.round(
+    (Date.parse(targetStr + "T00:00:00Z") - Date.parse(nowStr + "T00:00:00Z")) / 86400000
+  );
+
+  if (diffDays === 0) return "Today";
+  if (diffDays === 1) return "Tomorrow";
+  if (diffDays === -1) return "Yesterday";
+
+  return new Intl.DateTimeFormat("en-SG", {
+    timeZone: "Asia/Singapore",
+    weekday: "short",
+    day: "numeric",
+    month: "short"
+  }).format(targetDate instanceof Date ? targetDate : new Date(targetDate));
+}
+
+/**
  * Update Fasting Progress Ring & Countdown Values
  */
 function updateFastingRingUI() {
@@ -726,9 +756,11 @@ function updateFastingRingUI() {
       minute: "2-digit",
       hour12: true
     }).format(endObj);
+    const dayLabel = getSGTRelativeDayStr(endObj, new Date(now));
+
     finishElem.textContent = isGoalReached 
-      ? `Completed at ${timeStr} (SGT)` 
-      : `End: Today at ${timeStr} (SGT) • ${remH}h ${remM}m left`;
+      ? `Completed ${dayLabel.toLowerCase() === "today" ? "today" : dayLabel} at ${timeStr} (SGT)` 
+      : `End: ${dayLabel} at ${timeStr} (SGT) • ${remH}h ${remM}m left`;
   }
 }
 
