@@ -339,6 +339,52 @@ async function cancelUserFast(userId: number) {
   return data;
 }
 
+function getMetabolicStage(elapsedHours: number) {
+  if (elapsedHours < 4) {
+    return {
+      stage: "anabolic",
+      name: "Digestion & Stabilization",
+      emoji: "🍽️",
+      desc: "Blood sugar normalizes as your body absorbs recent nutrients."
+    };
+  } else if (elapsedHours < 12) {
+    return {
+      stage: "glycogen",
+      name: "Glycogen Depletion",
+      emoji: "📉",
+      desc: "Insulin drops to baseline; your liver burns stored glycogen."
+    };
+  } else if (elapsedHours < 16) {
+    return {
+      stage: "ketosis",
+      name: "Fat Burning & Ketosis",
+      emoji: "🔥",
+      desc: "Accelerated lipolysis as your body shifts to burning fat for fuel."
+    };
+  } else if (elapsedHours < 18) {
+    return {
+      stage: "autophagy",
+      name: "Autophagy Initiation",
+      emoji: "🧬",
+      desc: "Cellular recycling activates; damaged cellular proteins are cleansed."
+    };
+  } else if (elapsedHours < 24) {
+    return {
+      stage: "deep_autophagy",
+      name: "Deep Autophagy & GH Spike",
+      emoji: "⚡",
+      desc: "Growth hormone spikes to preserve muscle while peak cleansing occurs."
+    };
+  } else {
+    return {
+      stage: "extended",
+      name: "Extended Fasting State",
+      emoji: "🛡️",
+      desc: "Maximum insulin sensitivity, immune renewal, and deep cellular repair."
+    };
+  }
+}
+
 function formatFastingSummary(fast: any) {
   const start = new Date(fast.start_time).getTime();
   const now = Date.now();
@@ -365,6 +411,7 @@ function formatFastingSummary(fast: any) {
     hour12: true
   }).format(targetDateObj);
   const targetDateStr = getSGTDateStr(targetDateObj);
+  const metabolicStage = getMetabolicStage(elapsedHours);
 
   return {
     elapsedH,
@@ -376,7 +423,37 @@ function formatFastingSummary(fast: any) {
     targetHours,
     targetTimeStr,
     targetDateStr,
-    progressBar: renderProgressBar(elapsedHours, targetHours, 10)
+    progressBar: renderProgressBar(elapsedHours, targetHours, 10),
+    metabolicStage
+  };
+}
+
+async function checkAndAutoStopFast(userId: number): Promise<{
+  stopped: boolean;
+  fast?: any;
+  summaryMsg?: string;
+} | null> {
+  const active = await getActiveFast(userId);
+  if (!active) return null;
+
+  const stopped = await stopUserFast(userId);
+  if (!stopped) return null;
+
+  const summary = formatFastingSummary(stopped);
+  const isGoalMet = summary.isGoalReached;
+  const stage = summary.metabolicStage;
+
+  let summaryMsg = `⏰ *Fast Automatically Concluded!*\n` +
+    `• Duration: *${summary.elapsedH}h ${summary.elapsedM}m* (Target: ${summary.targetHours}h)\n` +
+    `• Final Phase: ${stage.emoji} *${stage.name}*\n` +
+    (isGoalMet
+      ? `🎯 *Goal Accomplished!* Excellent discipline breaking your fast with this meal.`
+      : `⚠️ Fast concluded prior to reaching your ${summary.targetHours}h goal.`);
+
+  return {
+    stopped: true,
+    fast: stopped,
+    summaryMsg
   };
 }
 
@@ -1046,14 +1123,16 @@ bot.command("fast", async (ctx) => {
   if (parts[1]?.toLowerCase() === "stop") {
     const fast = await stopUserFast(userId);
     if (!fast) return ctx.reply("No active fast found to stop. Type `/fast` to start one!", { parse_mode: "Markdown" });
-    const start = new Date(fast.start_time).getTime();
-    const end = new Date(fast.end_time).getTime();
-    const durationHours = Math.round(((end - start) / (1000 * 60 * 60)) * 10) / 10;
+    const summary = formatFastingSummary(fast);
+    const stage = summary.metabolicStage;
     return ctx.reply(
-      `🎉 *Fast Completed!*\n\n` +
-      `⏱️ Total Duration: *${durationHours} hours*\n` +
-      `🎯 Target: *${fast.target_hours} hours*\n\n` +
-      `Great job maintaining your fasting window! Time to break your fast with a nutritious meal. 🥗`,
+      `🎉 *Fast Concluded!*\n\n` +
+      `⏱️ Total Duration: *${summary.elapsedH}h ${summary.elapsedM}m*\n` +
+      `🎯 Target Goal: *${fast.target_hours} hours*\n` +
+      `🧬 Final Phase: ${stage.emoji} *${stage.name}*\n\n` +
+      (summary.isGoalReached
+        ? `Great discipline hitting your goal! Time to break your fast with a nutritious meal. 🥗`
+        : `Fasting session concluded before your target. Good effort! 🥗`),
       { parse_mode: "Markdown" }
     );
   }
@@ -1067,6 +1146,7 @@ bot.command("fast", async (ctx) => {
   const activeFast = await getActiveFast(userId);
   if (activeFast) {
     const summary = formatFastingSummary(activeFast);
+    const stage = summary.metabolicStage;
     const statusHeader = summary.isGoalReached
       ? "🎉 *Fasting Target Reached!*"
       : "🔥 *Active Fasting Window*";
@@ -1076,8 +1156,10 @@ bot.command("fast", async (ctx) => {
       `⏱️ Elapsed: *${summary.elapsedH}h ${summary.elapsedM}m* / ${summary.targetHours}h\n` +
       `${summary.progressBar}\n` +
       `${summary.isGoalReached ? "✅ You have met your goal!" : `⏳ Remaining: *${summary.remH}h ${summary.remM}m*`}\n` +
-      `🏁 Goal Completion: *${summary.targetDateStr} at ${summary.targetTimeStr} (SGT)*\n\n` +
-      `_Drink plenty of water to maintain energy levels! 💧_`;
+      `🧬 Stage: ${stage.emoji} *${stage.name}*\n` +
+      `_${stage.desc}_\n\n` +
+      `🏁 Target: *${summary.targetDateStr} at ${summary.targetTimeStr} (SGT)*\n\n` +
+      `💡 _Uploading your next meal (photo 📸, voice 🎙️, or text) will automatically complete this fast!_`;
 
     const keyboard = new InlineKeyboard()
       .text("🛑 End Fast", "fast_stop")
@@ -1877,16 +1959,17 @@ bot.callbackQuery(/^log_barcode:(.+):(.+)$/, async (ctx) => {
 
   if (error) return ctx.reply("Failed to log barcode food.");
   const streakMsg = await updateStreakAndGetMessage(userId);
+  const fastResult = await checkAndAutoStopFast(userId);
 
-  await ctx.reply(
-    `✅ *Logged ${escapeMarkdown(product.name)}!*\n\n` +
+  let replyText = `✅ *Logged ${escapeMarkdown(product.name)}!*\n\n` +
     `• Meal: *${mealType}*\n` +
     `• Calories: *${product.calories} kcal*\n` +
-    `• Macros: _P:${product.protein}g C:${product.carbs}g F:${product.fat}g_\n\n` +
-    (streakMsg ? `${streakMsg}\n\n` : "") +
-    `Use /today or tap 📊 Dashboard to view updated totals!`,
-    { parse_mode: "Markdown" }
-  );
+    `• Macros: _P:${product.protein}g C:${product.carbs}g F:${product.fat}g_\n\n`;
+  if (streakMsg) replyText += `${streakMsg}\n\n`;
+  if (fastResult?.summaryMsg) replyText += `${fastResult.summaryMsg}\n\n`;
+  replyText += `Use /today or tap 📊 Dashboard to view updated totals!`;
+
+  await ctx.reply(replyText, { parse_mode: "Markdown" });
 });
 
 bot.callbackQuery(/^set_persona:(.+)$/, async (ctx) => {
@@ -1969,9 +2052,11 @@ bot.callbackQuery(/^confirm:(.+)$/, async (ctx) => {
 
   await supabase.from("pending_food_logs").delete().eq("id", pendingId);
   const streakMsg = await updateStreakAndGetMessage(userId);
+  const fastResult = await checkAndAutoStopFast(userId);
 
   let confirmMsg = `✅ *Logged ${items.length} item${items.length > 1 ? "s" : ""} successfully!*`;
   if (streakMsg) confirmMsg += `\n\n${streakMsg}`;
+  if (fastResult?.summaryMsg) confirmMsg += `\n\n${fastResult.summaryMsg}`;
 
   try {
     await ctx.editMessageText(confirmMsg, { parse_mode: "Markdown" });
@@ -2024,7 +2109,10 @@ bot.callbackQuery(/^log_preset:(.+)$/, async (ctx) => {
   });
 
   const streakMsg = await updateStreakAndGetMessage(userId);
-  await ctx.reply(`✅ Logged preset *${escapeMarkdown(p.food_name)}* (${p.calories} kcal)! ${streakMsg}`, { parse_mode: "Markdown" });
+  const fastResult = await checkAndAutoStopFast(userId);
+  let replyMsg = `✅ Logged preset *${escapeMarkdown(p.food_name)}* (${p.calories} kcal)! ${streakMsg}`;
+  if (fastResult?.summaryMsg) replyMsg += `\n\n${fastResult.summaryMsg}`;
+  await ctx.reply(replyMsg, { parse_mode: "Markdown" });
   await sendTodaySummary(ctx, userId, ctx.from.first_name, ctx.from.username);
 });
 
@@ -2174,6 +2262,84 @@ async function sendCronReminders(type: "midday" | "night" | "weekly") {
           : `🔔 *Daily Check-in Reminder (SGT)*\n\nYou've logged your meals today!${coachingText}`;
         await bot.api.sendMessage(userId, text, { parse_mode: "Markdown" });
       } catch (err) {}
+    }
+  }
+}
+
+async function checkAndSendFastingCompletionAlerts() {
+  console.log("Checking for completed active fasts...");
+  const { data: activeFasts, error } = await supabase
+    .from("fasting_logs")
+    .select("id, user_id, start_time, target_hours, notified_completion")
+    .eq("status", "active")
+    .eq("notified_completion", false);
+
+  if (error || !activeFasts || activeFasts.length === 0) {
+    console.log("No pending fasting completion alerts.");
+    return;
+  }
+
+  const now = Date.now();
+  for (const fast of activeFasts) {
+    const start = new Date(fast.start_time).getTime();
+    const targetHours = Number(fast.target_hours) || 16;
+    const targetEndMs = start + targetHours * 60 * 60 * 1000;
+
+    if (now >= targetEndMs) {
+      const userId = fast.user_id;
+      const { data: profile } = await supabase
+        .from("user_profiles")
+        .select("persona, first_name")
+        .eq("user_id", userId)
+        .maybeSingle();
+
+      const personaStyle = profile?.persona || "sarcastic";
+      const summary = formatFastingSummary(fast);
+      const stage = summary.metabolicStage;
+
+      let message = "";
+      if (personaStyle === "supportive") {
+        message =
+          `🎉 *Fasting Goal Completed! (SGT)* 🎯\n\n` +
+          `Wonderful news! You have successfully reached your *${targetHours}-hour fasting goal*!\n\n` +
+          `⏱️ Fasted: *${summary.elapsedH}h ${summary.elapsedM}m*\n` +
+          `🧬 Current Stage: ${stage.emoji} *${stage.name}*\n` +
+          `_${stage.desc}_\n\n` +
+          `When you are ready to eat, simply send a photo 📸 or voice note 🎙️ of your meal and your fast will automatically conclude! 🥑`;
+      } else if (personaStyle === "sergeant") {
+        message =
+          `🪖 *Fasting Mission Accomplished! (SGT)* 🎯\n\n` +
+          `Attention! You have completed your *${targetHours}-hour fasting deployment* with discipline!\n\n` +
+          `⏱️ Total Time: *${summary.elapsedH}h ${summary.elapsedM}m*\n` +
+          `🧬 Phase: ${stage.emoji} *${stage.name}*\n\n` +
+          `When you break fast, fuel your body with protein and quality nutrition. Send your meal to auto-stop the timer! Dismissed!`;
+      } else {
+        message =
+          `😏 *Fasting Target Smashed! (SGT)* 🎯\n\n` +
+          `Look at that—you actually survived *${targetHours} hours* without raiding the pantry!\n\n` +
+          `⏱️ Elapsed: *${summary.elapsedH}h ${summary.elapsedM}m*\n` +
+          `🧬 Stage: ${stage.emoji} *${stage.name}*\n` +
+          `_${stage.desc}_\n\n` +
+          `Whenever you're done admiring your willpower, send a photo 📸 or voice note 🎙️ of your food and I'll auto-conclude this fast.`;
+      }
+
+      const keyboard = new InlineKeyboard()
+        .text("🛑 Conclude Fast Now", "fast_stop")
+        .webApp("📱 Open Dashboard", WEBAPP_URL);
+
+      try {
+        await bot.api.sendMessage(userId, message, {
+          parse_mode: "Markdown",
+          reply_markup: keyboard
+        });
+        await supabase
+          .from("fasting_logs")
+          .update({ notified_completion: true })
+          .eq("id", fast.id);
+        console.log(`Fasting completion notification sent to user ${userId}`);
+      } catch (sendErr) {
+        console.error(`Failed to send fasting alert to ${userId}:`, sendErr);
+      }
     }
   }
 }
@@ -2458,7 +2624,13 @@ Deno.serve(async (req) => {
         }
 
         await updateStreakAndGetMessage(userId);
-        return new Response(JSON.stringify({ success: true, log: inserted }), { headers: { ...corsHeaders, "Content-Type": "application/json" } });
+        const fastResult = await checkAndAutoStopFast(userId);
+        return new Response(JSON.stringify({
+          success: true,
+          log: inserted,
+          stopped_fast: fastResult?.fast || null,
+          fast_summary: fastResult?.summaryMsg || null
+        }), { headers: { ...corsHeaders, "Content-Type": "application/json" } });
       }
 
       if (apiAction === "delete_preset" && req.method === "POST") {
@@ -2600,7 +2772,13 @@ Deno.serve(async (req) => {
         }
 
         await updateStreakAndGetMessage(userId);
-        return new Response(JSON.stringify({ success: true, log: inserted }), {
+        const fastResult = await checkAndAutoStopFast(userId);
+        return new Response(JSON.stringify({
+          success: true,
+          log: inserted,
+          stopped_fast: fastResult?.fast || null,
+          fast_summary: fastResult?.summaryMsg || null
+        }), {
           status: 200,
           headers: { ...corsHeaders, "Content-Type": "application/json" }
         });
@@ -2707,7 +2885,7 @@ Deno.serve(async (req) => {
     // ── Cron Reminders ────────────────────────────────────────────────────────
     const cronType = url.searchParams.get("cron");
 
-    if (cronType === "midday" || cronType === "night" || cronType === "weekly") {
+    if (cronType === "midday" || cronType === "night" || cronType === "weekly" || cronType === "fasting") {
       const authHeader = req.headers.get("authorization")?.replace("Bearer ", "");
       const headerSecret = req.headers.get("x-cron-secret");
       const querySecret = url.searchParams.get("secret");
@@ -2722,8 +2900,13 @@ Deno.serve(async (req) => {
         return new Response("Unauthorized cron trigger", { status: 401 });
       }
 
-      await sendCronReminders(cronType as any);
-      return new Response(`Cron ${cronType} executed successfully`, { status: 200 });
+      if (cronType === "fasting") {
+        await checkAndSendFastingCompletionAlerts();
+        return new Response("Cron fasting executed successfully", { status: 200 });
+      } else {
+        await sendCronReminders(cronType as any);
+        return new Response(`Cron ${cronType} executed successfully`, { status: 200 });
+      }
     }
 
     // ── Telegram Webhook ──────────────────────────────────────────────────────

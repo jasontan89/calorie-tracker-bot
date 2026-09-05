@@ -605,6 +605,55 @@ function renderFastingCard() {
 }
 
 /**
+ * Helper to determine metabolic fasting stage based on elapsed hours
+ */
+function getMetabolicStage(elapsedHours) {
+  if (elapsedHours < 4) {
+    return {
+      emoji: "🥗",
+      name: "Anabolic / Fed State",
+      desc: "Digesting food, blood glucose & insulin elevated.",
+      color: "#3b82f6"
+    };
+  } else if (elapsedHours < 12) {
+    return {
+      emoji: "📉",
+      name: "Glycogen Depletion",
+      desc: "Insulin drops, body switches to liver glycogen stores.",
+      color: "#6366f1"
+    };
+  } else if (elapsedHours < 16) {
+    return {
+      emoji: "🔥",
+      name: "Ketosis / Fat Burning",
+      desc: "Accelerated lipolysis as body burns fat for energy.",
+      color: "#f59e0b"
+    };
+  } else if (elapsedHours < 18) {
+    return {
+      emoji: "🧬",
+      name: "Autophagy Induction",
+      desc: "Cellular cleanup initiated, clearing damaged proteins.",
+      color: "#10b981"
+    };
+  } else if (elapsedHours < 24) {
+    return {
+      emoji: "⚡",
+      name: "Deep Autophagy",
+      desc: "Growth hormone elevated, enhanced cellular renewal.",
+      color: "#8b5cf6"
+    };
+  } else {
+    return {
+      emoji: "🛡️",
+      name: "Extended Fasting",
+      desc: "Maximum autophagy and stem cell regeneration.",
+      color: "#ec4899"
+    };
+  }
+}
+
+/**
  * Update Fasting Progress Ring & Countdown Values
  */
 function updateFastingRingUI() {
@@ -646,6 +695,21 @@ function updateFastingRingUI() {
   const pctElem = document.getElementById("fasting-pct-text");
   if (pctElem) {
     pctElem.textContent = `${pct}% of ${targetHours}h`;
+  }
+
+  // Update Metabolic Stage Pill & Description
+  const stage = getMetabolicStage(elapsedHours);
+  const stagePill = document.getElementById("fasting-stage-pill");
+  if (stagePill) {
+    stagePill.textContent = `${stage.emoji} ${stage.name}`;
+    stagePill.style.color = stage.color;
+    stagePill.style.borderColor = `${stage.color}4d`;
+    stagePill.style.backgroundColor = `${stage.color}1a`;
+  }
+
+  const stageDesc = document.getElementById("fasting-stage-desc");
+  if (stageDesc) {
+    stageDesc.textContent = stage.desc;
   }
 
   const goalElem = document.getElementById("fasting-goal-text");
@@ -917,10 +981,22 @@ async function handleLogBarcodeProduct() {
     });
 
     if (!res.ok) throw new Error("Failed to log barcode food");
+    const data = await res.json().catch(() => ({}));
 
     closeProductResultModal();
     showLoading(false);
-    showToast(`Logged ${currentScannedProduct.name} (${cal} kcal)! ✅`);
+
+    if (data && data.stopped_fast) {
+      appState.activeFast = null;
+      renderFastingCard();
+      const dur = data.stopped_fast.elapsed_minutes || 0;
+      const h = Math.floor(dur / 60);
+      const m = dur % 60;
+      showToast(`Logged food & Fast concluded (${h}h ${m}m)! ⏱️`);
+    } else {
+      showToast(`Logged ${currentScannedProduct.name} (${cal} kcal)! ✅`);
+    }
+
     triggerHaptic("success");
     fetchDashboardData();
   } catch (err) {
@@ -1259,8 +1335,19 @@ async function logPresetToToday(presetId, foodName) {
     });
 
     if (!res.ok) throw new Error("Log preset failed");
+    const data = await res.json().catch(() => ({}));
 
-    showToast(`Logged "${foodName}" to today! ✅`);
+    if (data && data.stopped_fast) {
+      appState.activeFast = null;
+      renderFastingCard();
+      const dur = data.stopped_fast.elapsed_minutes || 0;
+      const h = Math.floor(dur / 60);
+      const m = dur % 60;
+      showToast(`Logged "${foodName}" & Fast concluded (${h}h ${m}m)! ⏱️`);
+    } else {
+      showToast(`Logged "${foodName}" to today! ✅`);
+    }
+
     triggerHaptic("success");
     fetchDashboardData();
   } catch (err) {

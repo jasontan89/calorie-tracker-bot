@@ -110,10 +110,18 @@ Accessible via the persistent `📊 Dashboard` menu button inside Telegram or on
 - **Resilient Cold-Start Handling:** Employs adaptive progressive timers (0s, 3.5s, 8s, 16s) and automated background retries (up to 3 attempts) to gracefully handle serverless cold starts. Never falls back to fake or demo data.
 - **Zero-Latency State Management:** Centralized authenticated API gateway passes Telegram `initData` securely.
 
-### 3. Intermittent Fasting Tracker
-- **Fast Protocols:** 16:8 (LeanGains), 18:6 (Intermediate), and 20:4 (Warrior Fast).
-- **Interactive SVG Ring Timer:** Real-time circular progress ring with elapsed hours, remaining time, and completion percentage.
-- **Command & WebApp Sync:** Start, monitor, complete, or cancel fasts seamlessly from either Telegram chat commands (`/fast`) or the WebApp dashboard.
+### 3. Intermittent Fasting & Metabolic Stage Tracker
+- **Fast Protocols:** 14:10, 16:8 (LeanGains), 18:6, 20:4 (Warrior Fast), and 24:0 (OMAD).
+- **Real-Time Metabolic Phase Tracking:** Real-time physiological stage identification across chat and WebApp:
+  - 🥗 *Anabolic / Fed State* (0–4h): Digestion, nutrient uptake, elevated insulin.
+  - 📉 *Glycogen Depletion* (4–12h): Insulin drops, liver glycogen mobilized for energy.
+  - 🔥 *Ketosis & Fat Burning* (12–16h): Accelerated lipolysis, burning stored fat.
+  - 🧬 *Autophagy Induction* (16–18h): Cellular cleanup and recycling of damaged proteins.
+  - ⚡ *Deep Autophagy* (18–24h): Elevated growth hormone and accelerated cellular renewal.
+  - 🛡️ *Extended Fasting* (24h+): Peak cellular rejuvenation and immune reset.
+- **Automatic Meal-Driven Fast Conclusion:** Logging any meal—via plate photo, voice note, text, barcode scanner, or 1-tap preset—automatically concludes an active fast, logs the exact duration, and reports the peak metabolic stage reached directly in the meal confirmation.
+- **Proactive Target Completion Alerts:** Automated `pg_cron` background service sends a celebratory completion message to Telegram when target hours are achieved.
+- **Interactive SVG Ring Timer & WebApp Sync:** Live countdown timer with color-coded metabolic badges synced across chat and Mini App.
 
 ### 4. Barcode Scanner (Open Food Facts)
 - **In-App Camera Scanner:** Integrated camera scanner powered by `html5-qrcode` inside the WebApp.
