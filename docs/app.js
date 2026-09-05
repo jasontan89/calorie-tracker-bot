@@ -30,6 +30,7 @@ let selectedFastHours = 16;
 // Barcode Scanner state
 let html5QrCodeScanner = null;
 let isScannerActive = false;
+let isProcessingScan = false;
 let currentScannedProduct = null;
 let currentServingMultiplier = 1.0;
 
@@ -55,20 +56,51 @@ function getTelegramInitData() {
 }
 
 /**
- * Build request headers with Supabase apikey and Telegram initData
+ * Build request headers with Supabase apikey
  */
 function getApiHeaders(customHeaders = {}) {
-  const initData = getTelegramInitData();
   const headers = {
     "Content-Type": "application/json",
     "apikey": SUPABASE_ANON_KEY,
+    "Authorization": `Bearer ${SUPABASE_ANON_KEY}`,
     ...customHeaders
   };
+  const initData = getTelegramInitData();
   if (initData) {
-    headers["Authorization"] = `Bearer ${initData}`;
-    headers["X-Telegram-Init-Data"] = initData;
+    try {
+      headers["X-Telegram-Init-Data"] = encodeURIComponent(initData);
+    } catch (e) {
+      headers["X-Telegram-Init-Data"] = initData;
+    }
   }
   return headers;
+}
+
+/**
+ * Centralized API fetch helper: automatically injects query params, initData, headers, and body
+ */
+async function callApi(action, options = {}) {
+  const initData = getTelegramInitData();
+  const params = new URLSearchParams(options.params || {});
+  params.set("api", action);
+  if (initData) {
+    params.set("initData", initData);
+  }
+
+  const url = `${API_BASE_URL}?${params.toString()}`;
+  const headers = getApiHeaders(options.headers || {});
+
+  const fetchOptions = {
+    method: options.method || "GET",
+    headers: headers,
+    signal: options.signal
+  };
+
+  if (options.body) {
+    fetchOptions.body = typeof options.body === "string" ? options.body : JSON.stringify(options.body);
+  }
+
+  return await fetch(url, fetchOptions);
 }
 
 // Initialize on DOM load
@@ -282,10 +314,17 @@ function setupEventListeners() {
     triggerHaptic("medium");
   });
 
-  // Retry Button
+  // Reconnect button on full-screen loading overlay
+  document.getElementById("loading-reconnect-btn")?.addEventListener("click", () => {
+    triggerHaptic("medium");
+    fetchDashboardData(1);
+  });
+
+  // Retry Button (if present)
   document.getElementById("retry-btn")?.addEventListener("click", () => {
-    document.getElementById("error-banner").style.display = "none";
-    fetchDashboardData();
+    const banner = document.getElementById("error-banner");
+    if (banner) banner.style.display = "none";
+    fetchDashboardData(1);
   });
 }
 
@@ -303,61 +342,119 @@ function switchTab(tabId) {
   if (targetContent) targetContent.classList.add("active");
 }
 
+let isInitialLoad = true;
+
 /**
  * Fetch Main Dashboard Data from Backend API
+ * Automatically handles Edge Function cold starts with progressive status updates & auto-retry.
  */
-async function fetchDashboardData() {
+async function fetchDashboardData(attempt = 1) {
+  const maxRetries = 3;
   showLoading(true);
 
-  // 6-second safety timeout controller
+  const statusTextElem = document.getElementById("loading-status-text");
+  const spinnerAnimElem = document.getElementById("loading-spinner-anim");
+  const reconnectWrap = document.getElementById("loading-reconnect-wrap");
+
+  if (reconnectWrap) reconnectWrap.style.display = "none";
+  if (spinnerAnimElem) spinnerAnimElem.style.display = "block";
+
+  // Progressive status updates for user feedback during cold starts
+  if (statusTextElem) {
+    if (attempt === 1) {
+      statusTextElem.textContent = "Loading your nutrition data...";
+    } else {
+      statusTextElem.textContent = `Connecting to server (attempt ${attempt} of ${maxRetries})...`;
+    }
+  }
+
+  // Timer 1: after 3.5 seconds
+  const timer1 = setTimeout(() => {
+    if (statusTextElem) {
+      statusTextElem.textContent = "Waking up server & syncing live logs...";
+    }
+  }, 3500);
+
+  // Timer 2: after 8 seconds
+  const timer2 = setTimeout(() => {
+    if (statusTextElem) {
+      statusTextElem.textContent = "Almost ready, fetching your latest records...";
+    }
+  }, 8000);
+
+  // Timer 3: after 16 seconds
+  const timer3 = setTimeout(() => {
+    if (statusTextElem) {
+      statusTextElem.textContent = "Establishing secure database session...";
+    }
+  }, 16000);
+
+  // Generous 35-second timeout per attempt to allow cold starts to finish
   const controller = new AbortController();
-  const timeoutId = setTimeout(() => controller.abort(), 6000);
+  const timeoutId = setTimeout(() => controller.abort(), 35000);
+
+  const clearAllTimers = () => {
+    clearTimeout(timer1);
+    clearTimeout(timer2);
+    clearTimeout(timer3);
+    clearTimeout(timeoutId);
+  };
 
   try {
-    const headers = getApiHeaders();
-    const response = await fetch(`${API_BASE_URL}?api=dashboard`, {
-      method: "GET",
-      headers: headers,
-      signal: controller.signal
-    });
-
-    clearTimeout(timeoutId);
+    const response = await callApi("dashboard", { signal: controller.signal });
+    clearAllTimers();
 
     if (!response.ok) {
-      throw new Error(`API error: ${response.status} ${response.statusText}`);
+      throw new Error(`API returned HTTP ${response.status}: ${response.statusText}`);
     }
 
     const data = await response.json();
+    if (!data || !data.profile) {
+      throw new Error("Invalid dashboard payload received from server");
+    }
+
+    // Successfully received real user data
     appState = {
       ...appState,
       ...data,
       selectedDate: data.todayDate || new Date().toISOString().substring(0, 10)
     };
 
+    isInitialLoad = false;
     renderAllViews();
     showLoading(false);
 
     const errorBanner = document.getElementById("error-banner");
     if (errorBanner) errorBanner.style.display = "none";
   } catch (err) {
-    clearTimeout(timeoutId);
-    console.error("Failed to load dashboard data:", err);
-    showLoading(false);
+    clearAllTimers();
+    console.warn(`Dashboard fetch attempt ${attempt} failed:`, err);
 
-    // If live fetch fails, load offline cached / preview data so user is never stuck
-    if (!appState.profile) {
-      loadMockDataForPreview();
-    } else {
-      renderAllViews();
+    // If we haven't exhausted our automatic retries, retry automatically after a short delay
+    if (attempt < maxRetries) {
+      if (statusTextElem) {
+        statusTextElem.textContent = `Server cold start in progress. Retrying in a moment... (${attempt + 1}/${maxRetries})`;
+      }
+      await new Promise((r) => setTimeout(r, 1200));
+      return fetchDashboardData(attempt + 1);
     }
 
-    const errorBanner = document.getElementById("error-banner");
-    const errorText = document.getElementById("error-text");
-    if (errorBanner && errorText) {
-      errorBanner.style.display = "flex";
-      errorText.textContent = getTelegramInitData()
-        ? "⚠️ Offline mode. Tap Retry to reconnect live."
-        : "Showing preview mode (open inside Telegram for live data).";
+    // All automatic retries exhausted
+    console.error("All dashboard load attempts failed:", err);
+
+    if (isInitialLoad && !appState.profile) {
+      // Keep loading overlay up so user NEVER sees blank/demo data or an offline banner!
+      if (spinnerAnimElem) spinnerAnimElem.style.display = "none";
+      if (statusTextElem) {
+        statusTextElem.textContent = "Unable to connect to server. Please check your internet connection.";
+      }
+      if (reconnectWrap) {
+        reconnectWrap.style.display = "block";
+      }
+    } else {
+      // Already had loaded session; notify softly with toast
+      showLoading(false);
+      showToast("Could not refresh data. Check your connection.", true);
     }
   }
 }
@@ -366,6 +463,7 @@ async function fetchDashboardData() {
  * Render All UI Components
  */
 function renderAllViews() {
+  if (!appState.profile) return;
   try {
     renderHeader();
     renderSummaryCard();
@@ -507,6 +605,55 @@ function renderFastingCard() {
 }
 
 /**
+ * Helper to determine metabolic fasting stage based on elapsed hours
+ */
+function getMetabolicStage(elapsedHours) {
+  if (elapsedHours < 4) {
+    return {
+      emoji: "🥗",
+      name: "Anabolic / Fed State",
+      desc: "Digesting food, blood glucose & insulin elevated.",
+      color: "#3b82f6"
+    };
+  } else if (elapsedHours < 12) {
+    return {
+      emoji: "📉",
+      name: "Glycogen Depletion",
+      desc: "Insulin drops, body switches to liver glycogen stores.",
+      color: "#6366f1"
+    };
+  } else if (elapsedHours < 16) {
+    return {
+      emoji: "🔥",
+      name: "Ketosis / Fat Burning",
+      desc: "Accelerated lipolysis as body burns fat for energy.",
+      color: "#f59e0b"
+    };
+  } else if (elapsedHours < 18) {
+    return {
+      emoji: "🧬",
+      name: "Autophagy Induction",
+      desc: "Cellular cleanup initiated, clearing damaged proteins.",
+      color: "#10b981"
+    };
+  } else if (elapsedHours < 24) {
+    return {
+      emoji: "⚡",
+      name: "Deep Autophagy",
+      desc: "Growth hormone elevated, enhanced cellular renewal.",
+      color: "#8b5cf6"
+    };
+  } else {
+    return {
+      emoji: "🛡️",
+      name: "Extended Fasting",
+      desc: "Maximum autophagy and stem cell regeneration.",
+      color: "#ec4899"
+    };
+  }
+}
+
+/**
  * Update Fasting Progress Ring & Countdown Values
  */
 function updateFastingRingUI() {
@@ -550,6 +697,21 @@ function updateFastingRingUI() {
     pctElem.textContent = `${pct}% of ${targetHours}h`;
   }
 
+  // Update Metabolic Stage Pill & Description
+  const stage = getMetabolicStage(elapsedHours);
+  const stagePill = document.getElementById("fasting-stage-pill");
+  if (stagePill) {
+    stagePill.textContent = `${stage.emoji} ${stage.name}`;
+    stagePill.style.color = stage.color;
+    stagePill.style.borderColor = `${stage.color}4d`;
+    stagePill.style.backgroundColor = `${stage.color}1a`;
+  }
+
+  const stageDesc = document.getElementById("fasting-stage-desc");
+  if (stageDesc) {
+    stageDesc.textContent = stage.desc;
+  }
+
   const goalElem = document.getElementById("fasting-goal-text");
   if (goalElem) {
     goalElem.textContent = isGoalReached ? "🎉 Fasting Target Achieved!" : `Target: ${targetHours} Hours`;
@@ -576,10 +738,9 @@ function updateFastingRingUI() {
 async function handleStartFast(targetHours) {
   showLoading(true);
   try {
-    const res = await fetch(`${API_BASE_URL}?api=start_fast`, {
+    const res = await callApi("start_fast", {
       method: "POST",
-      headers: getApiHeaders(),
-      body: JSON.stringify({ target_hours: targetHours })
+      body: { target_hours: targetHours }
     });
 
     if (!res.ok) throw new Error("Failed to start fast");
@@ -603,10 +764,7 @@ async function handleStopFast() {
   const proceed = async () => {
     showLoading(true);
     try {
-      const res = await fetch(`${API_BASE_URL}?api=stop_fast`, {
-        method: "POST",
-        headers: getApiHeaders()
-      });
+      const res = await callApi("stop_fast", { method: "POST" });
 
       if (!res.ok) throw new Error("Failed to stop fast");
       appState.activeFast = null;
@@ -636,10 +794,7 @@ async function handleStopFast() {
 async function handleCancelFast() {
   showLoading(true);
   try {
-    await fetch(`${API_BASE_URL}?api=cancel_fast`, {
-      method: "POST",
-      headers: getApiHeaders()
-    });
+    await callApi("cancel_fast", { method: "POST" });
 
     appState.activeFast = null;
     showLoading(false);
@@ -660,6 +815,7 @@ function openBarcodeScanner() {
   const modal = document.getElementById("scanner-modal");
   if (!modal) return;
   modal.style.display = "flex";
+  isProcessingScan = false;
 
   if (window.Html5Qrcode) {
     try {
@@ -670,6 +826,8 @@ function openBarcodeScanner() {
         { facingMode: "environment" },
         config,
         (decodedText) => {
+          if (isProcessingScan) return;
+          isProcessingScan = true;
           triggerHaptic("success");
           closeBarcodeScanner();
           lookupBarcodeProduct(decodedText);
@@ -708,9 +866,8 @@ function closeBarcodeScanner() {
 async function lookupBarcodeProduct(barcode) {
   showLoading(true);
   try {
-    const res = await fetch(`${API_BASE_URL}?api=lookup_barcode&barcode=${encodeURIComponent(barcode)}`, {
-      method: "GET",
-      headers: getApiHeaders()
+    const res = await callApi("lookup_barcode", {
+      params: { barcode: barcode }
     });
 
     if (!res.ok) {
@@ -810,10 +967,9 @@ async function handleLogBarcodeProduct() {
   const mealType = document.getElementById("select-meal-type")?.value || "Meal";
 
   try {
-    const res = await fetch(`${API_BASE_URL}?api=log_barcode_meal`, {
+    const res = await callApi("log_barcode_meal", {
       method: "POST",
-      headers: getApiHeaders(),
-      body: JSON.stringify({
+      body: {
         food_name: currentScannedProduct.name,
         calories: cal,
         protein: p,
@@ -821,14 +977,26 @@ async function handleLogBarcodeProduct() {
         fat: f,
         meal_type: mealType,
         barcode: currentScannedProduct.barcode
-      })
+      }
     });
 
     if (!res.ok) throw new Error("Failed to log barcode food");
+    const data = await res.json().catch(() => ({}));
 
     closeProductResultModal();
     showLoading(false);
-    showToast(`Logged ${currentScannedProduct.name} (${cal} kcal)! ✅`);
+
+    if (data && data.stopped_fast) {
+      appState.activeFast = null;
+      renderFastingCard();
+      const dur = data.stopped_fast.elapsed_minutes || 0;
+      const h = Math.floor(dur / 60);
+      const m = dur % 60;
+      showToast(`Logged food & Fast concluded (${h}h ${m}m)! ⏱️`);
+    } else {
+      showToast(`Logged ${currentScannedProduct.name} (${cal} kcal)! ✅`);
+    }
+
     triggerHaptic("success");
     fetchDashboardData();
   } catch (err) {
@@ -844,10 +1012,7 @@ async function handleLogBarcodeProduct() {
 async function handleGenerateWeeklyReport() {
   showLoading(true);
   try {
-    const res = await fetch(`${API_BASE_URL}?api=generate_weekly_report`, {
-      method: "POST",
-      headers: getApiHeaders()
-    });
+    const res = await callApi("generate_weekly_report", { method: "POST" });
 
     showLoading(false);
     if (res.ok) {
@@ -944,8 +1109,10 @@ function renderChart() {
               const index = elements[0].index;
               const selected = history[index];
               if (selected) {
-                selectDate(selected.date);
-                triggerHaptic("light");
+                setTimeout(() => {
+                  selectDate(selected.date);
+                  triggerHaptic("light");
+                }, 0);
               }
             }
           },
@@ -1083,10 +1250,9 @@ async function confirmAndDeleteMeal(logId, foodName) {
     if (elem) elem.style.opacity = "0.3";
 
     try {
-      const res = await fetch(`${API_BASE_URL}?api=delete_food`, {
+      const res = await callApi("delete_food", {
         method: "POST",
-        headers: getApiHeaders(),
-        body: JSON.stringify({ log_id: logId })
+        body: { log_id: logId }
       });
 
       if (!res.ok) throw new Error("Delete failed");
@@ -1163,15 +1329,25 @@ function renderPresetsList() {
 async function logPresetToToday(presetId, foodName) {
   triggerHaptic("medium");
   try {
-    const res = await fetch(`${API_BASE_URL}?api=log_preset`, {
+    const res = await callApi("log_preset", {
       method: "POST",
-      headers: getApiHeaders(),
-      body: JSON.stringify({ preset_id: presetId })
+      body: { preset_id: presetId }
     });
 
     if (!res.ok) throw new Error("Log preset failed");
+    const data = await res.json().catch(() => ({}));
 
-    showToast(`Logged "${foodName}" to today! ✅`);
+    if (data && data.stopped_fast) {
+      appState.activeFast = null;
+      renderFastingCard();
+      const dur = data.stopped_fast.elapsed_minutes || 0;
+      const h = Math.floor(dur / 60);
+      const m = dur % 60;
+      showToast(`Logged "${foodName}" & Fast concluded (${h}h ${m}m)! ⏱️`);
+    } else {
+      showToast(`Logged "${foodName}" to today! ✅`);
+    }
+
     triggerHaptic("success");
     fetchDashboardData();
   } catch (err) {
@@ -1187,10 +1363,9 @@ async function deletePreset(presetId, foodName) {
   const proceed = async () => {
     triggerHaptic("warning");
     try {
-      const res = await fetch(`${API_BASE_URL}?api=delete_preset`, {
+      const res = await callApi("delete_preset", {
         method: "POST",
-        headers: getApiHeaders(),
-        body: JSON.stringify({ preset_id: presetId })
+        body: { preset_id: presetId }
       });
 
       if (!res.ok) throw new Error("Delete preset failed");
@@ -1262,10 +1437,9 @@ async function updatePersona(newPersona) {
   document.getElementById(`persona-${newPersona}`)?.classList.add("selected");
 
   try {
-    const res = await fetch(`${API_BASE_URL}?api=update_persona`, {
+    const res = await callApi("update_persona", {
       method: "POST",
-      headers: getApiHeaders(),
-      body: JSON.stringify({ persona: newPersona })
+      body: { persona: newPersona }
     });
 
     if (!res.ok) throw new Error("Update persona failed");
@@ -1287,10 +1461,9 @@ async function updateLoggingMode(newMode) {
   document.getElementById(`mode-${newMode}`)?.classList.add("selected");
 
   try {
-    const res = await fetch(`${API_BASE_URL}?api=update_logging_mode`, {
+    const res = await callApi("update_logging_mode", {
       method: "POST",
-      headers: getApiHeaders(),
-      body: JSON.stringify({ mode: newMode })
+      body: { mode: newMode }
     });
 
     if (!res.ok) throw new Error("Update logging mode failed");
@@ -1310,10 +1483,9 @@ async function updateLoggingMode(newMode) {
  */
 async function updateCalorieTarget(newTarget) {
   try {
-    const res = await fetch(`${API_BASE_URL}?api=update_target`, {
+    const res = await callApi("update_target", {
       method: "POST",
-      headers: getApiHeaders(),
-      body: JSON.stringify({ target: newTarget })
+      body: { target: newTarget }
     });
 
     if (!res.ok) throw new Error("Update target failed");
@@ -1333,10 +1505,9 @@ async function updateCalorieTarget(newTarget) {
  */
 async function updateMacroTargets(protein, carbs, fat) {
   try {
-    const res = await fetch(`${API_BASE_URL}?api=update_macros`, {
+    const res = await callApi("update_macros", {
       method: "POST",
-      headers: getApiHeaders(),
-      body: JSON.stringify({ protein, carbs, fat })
+      body: { protein, carbs, fat }
     });
 
     if (!res.ok) throw new Error("Update macros failed");
@@ -1356,10 +1527,9 @@ async function updateMacroTargets(protein, carbs, fat) {
  */
 async function resetToAutoMacros() {
   try {
-    const res = await fetch(`${API_BASE_URL}?api=update_macros`, {
+    const res = await callApi("update_macros", {
       method: "POST",
-      headers: getApiHeaders(),
-      body: JSON.stringify({ is_auto: true })
+      body: { is_auto: true }
     });
 
     if (!res.ok) throw new Error("Reset macros failed");
@@ -1379,33 +1549,20 @@ async function resetToAutoMacros() {
 async function exportFoodLogsCSV() {
   showLoading(true);
   try {
-    const initData = getTelegramInitData();
-
-    if (initData) {
-      const res = await fetch(`${API_BASE_URL}?api=export_csv_to_chat`, {
-        method: "POST",
-        headers: getApiHeaders()
-      });
-
-      if (res.ok) {
-        showLoading(false);
-        showToast("📥 CSV Export sent directly to your Telegram chat!");
-        triggerHaptic("success");
-        return;
-      }
+    const resChat = await callApi("export_csv_to_chat", { method: "POST" });
+    if (resChat.ok) {
+      showLoading(false);
+      showToast("📥 CSV Export sent directly to your Telegram chat!");
+      triggerHaptic("success");
+      return;
     }
 
     // Fallback: Browser download
     let logs = [];
-    if (initData) {
-      const res = await fetch(`${API_BASE_URL}?api=export_all_logs`, {
-        method: "GET",
-        headers: getApiHeaders()
-      });
-      if (res.ok) {
-        const data = await res.json();
-        logs = data.logs || [];
-      }
+    const resAll = await callApi("export_all_logs", { method: "GET" });
+    if (resAll.ok) {
+      const data = await resAll.json();
+      logs = data.logs || [];
     }
 
     if (logs.length === 0) {
@@ -1508,54 +1665,4 @@ function escapeHtml(str) {
     .replace(/</g, "&lt;")
     .replace(/>/g, "&gt;")
     .replace(/"/g, "&quot;");
-}
-
-/**
- * Fallback Mock Data for Browser / Dev Preview
- */
-function loadMockDataForPreview() {
-  const today = new Date().toISOString().substring(0, 10);
-  appState = {
-    profile: {
-      user_id: 12345,
-      first_name: "Jason",
-      daily_target: 2000,
-      streak_count: 5,
-      persona: "sarcastic",
-      logging_mode: "itemized"
-    },
-    todayDate: today,
-    selectedDate: today,
-    todayTotals: { calories: 1450, protein: 110, carbs: 160, fat: 42 },
-    macroTargets: { protein: 150, carbs: 200, fat: 67 },
-    todayLogs: [
-      { id: 1, food_name: "2 Scrambled Eggs & Whole Wheat Toast", calories: 360, protein: 18, carbs: 26, fat: 20, meal_type: "Breakfast" },
-      { id: 2, food_name: "Chicken Rice & Steamed Greens", calories: 650, protein: 45, carbs: 75, fat: 18, meal_type: "Lunch" },
-      { id: 3, food_name: "Whey Protein Shake & Banana", calories: 240, protein: 30, carbs: 28, fat: 2, meal_type: "Snack" },
-      { id: 4, food_name: "Greek Yogurt & Berries", calories: 200, protein: 17, carbs: 31, fat: 2, meal_type: "Dinner" }
-    ],
-    history7d: [
-      { date: "2026-08-24", label: "08-24", calories: 1920, protein: 130, carbs: 190, fat: 62, logs: [] },
-      { date: "2026-08-25", label: "08-25", calories: 2150, protein: 145, carbs: 220, fat: 70, logs: [] },
-      { date: "2026-08-26", label: "08-26", calories: 1850, protein: 125, carbs: 180, fat: 60, logs: [] },
-      { date: "2026-08-27", label: "08-27", calories: 1980, protein: 135, carbs: 195, fat: 64, logs: [] },
-      { date: "2026-08-28", label: "08-28", calories: 1750, protein: 120, carbs: 170, fat: 58, logs: [] },
-      { date: "2026-08-29", label: "08-29", calories: 2050, protein: 140, carbs: 210, fat: 68, logs: [] },
-      { date: today, label: "Today", calories: 1450, protein: 110, carbs: 160, fat: 42, logs: [] }
-    ],
-    presets: [
-      { id: "p1", food_name: "Whey Protein Shake (1 Scoop)", calories: 130, protein: 25, carbs: 3, fat: 2 },
-      { id: "p2", food_name: "Creatine Monohydrate (5g)", calories: 0, protein: 0, carbs: 0, fat: 0 },
-      { id: "p3", food_name: "Black Coffee / Americano", calories: 5, protein: 0, carbs: 1, fat: 0 }
-    ],
-    activeFast: {
-      id: "demo-fast",
-      start_time: new Date(Date.now() - 14.5 * 60 * 60 * 1000).toISOString(),
-      target_hours: 16,
-      status: "active"
-    },
-    currentChartView: "calories",
-    chartInstance: null
-  };
-  renderAllViews();
 }
