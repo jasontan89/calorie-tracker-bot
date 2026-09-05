@@ -126,6 +126,26 @@ function getSGTStartOfDayISO(date: Date = new Date()): string {
   return new Date(`${dateStr}T00:00:00+08:00`).toISOString();
 }
 
+function getSGTRelativeDayStr(targetDate: Date, nowDate: Date = new Date()): string {
+  const targetStr = getSGTDateStr(targetDate);
+  const nowStr = getSGTDateStr(nowDate);
+
+  const diffDays = Math.round(
+    (Date.parse(targetStr + "T00:00:00Z") - Date.parse(nowStr + "T00:00:00Z")) / 86400000
+  );
+
+  if (diffDays === 0) return "Today";
+  if (diffDays === 1) return "Tomorrow";
+  if (diffDays === -1) return "Yesterday";
+
+  return new Intl.DateTimeFormat("en-SG", {
+    timeZone: "Asia/Singapore",
+    weekday: "short",
+    day: "numeric",
+    month: "short"
+  }).format(targetDate);
+}
+
 // Helper: Ensure user profile exists & keep display names up to date
 async function ensureUserProfile(userId: number, firstName?: string, username?: string) {
   const { data, error } = await supabase
@@ -411,6 +431,8 @@ function formatFastingSummary(fast: any) {
     hour12: true
   }).format(targetDateObj);
   const targetDateStr = getSGTDateStr(targetDateObj);
+  const targetDayStr = getSGTRelativeDayStr(targetDateObj, new Date(now));
+  const targetDisplay = `${targetDayStr} at ${targetTimeStr} (SGT)`;
   const metabolicStage = getMetabolicStage(elapsedHours);
 
   return {
@@ -423,6 +445,8 @@ function formatFastingSummary(fast: any) {
     targetHours,
     targetTimeStr,
     targetDateStr,
+    targetDayStr,
+    targetDisplay,
     progressBar: renderProgressBar(elapsedHours, targetHours, 10),
     metabolicStage
   };
@@ -1114,7 +1138,7 @@ bot.command("fast", async (ctx) => {
     return ctx.reply(
       `⏰ *Fasting Started!* (${hours}h Fast)\n\n` +
       `🎯 Target Goal: *${hours} hours*\n` +
-      `🏁 Target End: *${summary.targetDateStr} at ${summary.targetTimeStr} (SGT)*\n\n` +
+      `🏁 Target End: *${summary.targetDisplay}*\n\n` +
       `Stay hydrated! Water, black coffee, and unsweetened tea are allowed. 💧`,
       { parse_mode: "Markdown", reply_markup: keyboard }
     );
@@ -1158,7 +1182,7 @@ bot.command("fast", async (ctx) => {
       `${summary.isGoalReached ? "✅ You have met your goal!" : `⏳ Remaining: *${summary.remH}h ${summary.remM}m*`}\n` +
       `🧬 Stage: ${stage.emoji} *${stage.name}*\n` +
       `_${stage.desc}_\n\n` +
-      `🏁 Target: *${summary.targetDateStr} at ${summary.targetTimeStr} (SGT)*\n\n` +
+      `🏁 Target: *${summary.targetDisplay}*\n\n` +
       `💡 _Uploading your next meal (photo 📸, voice 🎙️, or text) will automatically complete this fast!_`;
 
     const keyboard = new InlineKeyboard()
@@ -1865,7 +1889,7 @@ bot.callbackQuery("fast_status", async (ctx) => {
       `⏱️ Elapsed: *${summary.elapsedH}h ${summary.elapsedM}m* / ${summary.targetHours}h\n` +
       `${summary.progressBar}\n` +
       `${summary.isGoalReached ? "✅ Target met!" : `⏳ Remaining: *${summary.remH}h ${summary.remM}m*`}\n` +
-      `🏁 Goal: *${summary.targetDateStr} at ${summary.targetTimeStr} (SGT)*`;
+      `🏁 Goal: *${summary.targetDisplay}*`;
 
     const keyboard = new InlineKeyboard()
       .text("🛑 End Fast", "fast_stop")
@@ -1907,7 +1931,7 @@ bot.callbackQuery(/^fast_start:(\d+)$/, async (ctx) => {
 
   await ctx.reply(
     `⏰ *Fasting Started!* (${hours}h Fast)\n\n` +
-    `🏁 Target End: *${summary.targetDateStr} at ${summary.targetTimeStr} (SGT)*\n\n` +
+    `🏁 Target End: *${summary.targetDisplay}*\n\n` +
     `Stay hydrated with water and unsweetened tea/coffee! 💧`,
     { parse_mode: "Markdown", reply_markup: keyboard }
   );
