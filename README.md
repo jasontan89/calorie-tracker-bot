@@ -351,14 +351,17 @@ SUPABASE_SERVICE_ROLE_KEY="eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9..."
    - `supabase-schema-v3.sql` (Group leaderboards)
    - `supabase-schema-v3.1.sql` (User presets)
    - `supabase-schema-v3.2.sql` (Names, meal types)
-   - `fasting_logs` schema (Fasting timer support)
+   - `supabase-schema-v3.3-fasting.sql` (Fasting logs table, RLS, index)
+   - `supabase-schema-v3.4-consolidation.sql` (Missing columns, foreign keys & performance indexes)
 
 ### 2. Supabase Secrets Configuration
-Store your bot token and Gemini API key securely in Supabase:
+Store your bot token, webhook secret, cron secret, and Gemini API key securely in Supabase:
 
 ```bash
 supabase secrets set CALORIE_BOT_TOKEN="your_bot_token"
 supabase secrets set GEMINI_API_KEY="your_gemini_api_key"
+supabase secrets set TELEGRAM_SECRET_TOKEN="your_random_32_byte_hex_secret"
+supabase secrets set CRON_SECRET="your_random_cron_secret"
 ```
 
 ### 3. Edge Function Deployment
@@ -372,10 +375,11 @@ supabase functions deploy telegram-bot --no-verify-jwt
 > `--no-verify-jwt` is required because Telegram Webhook POST requests are sent directly from Telegram's servers without a Supabase bearer token.
 
 ### 4. Telegram Webhook Registration
-Register your deployed Edge Function as the Telegram Webhook:
+Register your deployed Edge Function as the Telegram Webhook with secret token verification:
 
 ```bash
 curl -F "url=https://<your-project-id>.supabase.co/functions/v1/telegram-bot" \
+  -F "secret_token=<TELEGRAM_SECRET_TOKEN>" \
   https://api.telegram.org/bot<CALORIE_BOT_TOKEN>/setWebhook
 ```
 

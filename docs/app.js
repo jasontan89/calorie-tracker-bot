@@ -3,8 +3,9 @@
  * Interacts with Supabase Edge Function API using authenticated Telegram WebApp initData.
  */
 
-const API_BASE_URL = "https://blcsjvifiytbznwesmyx.supabase.co/functions/v1/telegram-bot";
-const SUPABASE_ANON_KEY = "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6ImJsY3NqdmlmaXl0Ynpud2VzbXl4Iiwicm9sZSI6ImFub24iLCJpYXQiOjE3ODI4MTkzNDcsImV4cCI6MjA5ODM5NTM0N30.PhO08MviDmKyRn941IngM9-WaG_j7lwiCL5IqzG5qt0";
+// Dynamic backend configuration with window.CALORIE_BOT_CONFIG override support
+const API_BASE_URL = window.CALORIE_BOT_CONFIG?.API_BASE_URL || "https://blcsjvifiytbznwesmyx.supabase.co/functions/v1/telegram-bot";
+const SUPABASE_ANON_KEY = window.CALORIE_BOT_CONFIG?.SUPABASE_ANON_KEY || "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6ImJsY3NqdmlmaXl0Ynpud2VzbXl4Iiwicm9sZSI6ImFub24iLCJpYXQiOjE3ODI4MTkzNDcsImV4cCI6MjA5ODM5NTM0N30.PhO08MviDmKyRn941IngM9-WaG_j7lwiCL5IqzG5qt0";
 
 // Global App State
 let appState = {
@@ -1021,9 +1022,13 @@ async function handleLogBarcodeProduct() {
     if (data && data.stopped_fast) {
       appState.activeFast = null;
       renderFastingCard();
-      const dur = data.stopped_fast.elapsed_minutes || 0;
-      const h = Math.floor(dur / 60);
-      const m = dur % 60;
+      let h = 0, m = 0;
+      if (data.stopped_fast.start_time && data.stopped_fast.end_time) {
+        const diffMs = Math.max(0, new Date(data.stopped_fast.end_time).getTime() - new Date(data.stopped_fast.start_time).getTime());
+        const totalMins = Math.floor(diffMs / 60000);
+        h = Math.floor(totalMins / 60);
+        m = totalMins % 60;
+      }
       showToast(`Logged food & Fast concluded (${h}h ${m}m)! ⏱️`);
     } else {
       showToast(`Logged ${currentScannedProduct.name} (${cal} kcal)! ✅`);
@@ -1372,9 +1377,13 @@ async function logPresetToToday(presetId, foodName) {
     if (data && data.stopped_fast) {
       appState.activeFast = null;
       renderFastingCard();
-      const dur = data.stopped_fast.elapsed_minutes || 0;
-      const h = Math.floor(dur / 60);
-      const m = dur % 60;
+      let h = 0, m = 0;
+      if (data.stopped_fast.start_time && data.stopped_fast.end_time) {
+        const diffMs = Math.max(0, new Date(data.stopped_fast.end_time).getTime() - new Date(data.stopped_fast.start_time).getTime());
+        const totalMins = Math.floor(diffMs / 60000);
+        h = Math.floor(totalMins / 60);
+        m = totalMins % 60;
+      }
       showToast(`Logged "${foodName}" & Fast concluded (${h}h ${m}m)! ⏱️`);
     } else {
       showToast(`Logged "${foodName}" to today! ✅`);
@@ -1620,8 +1629,11 @@ async function exportFoodLogsCSV() {
     exportList.forEach(item => {
       const created = item.created_at ? new Date(item.created_at).toLocaleString("en-SG", { timeZone: "Asia/Singapore" }) : appState.todayDate;
       const meal = item.meal_type || "Meal";
-      const name = `"${(item.food_name || "").replace(/"/g, '""')}"`;
-      csv += `${created},${meal},${name},${item.calories || 0},${item.protein || 0},${item.carbs || 0},${item.fat || 0}\n`;
+      let name = (item.food_name || "").replace(/"/g, '""');
+      if (/^[=\+\-\@\t\r]/.test(name)) {
+        name = `'${name}`;
+      }
+      csv += `${created},${meal},"${name}",${item.calories || 0},${item.protein || 0},${item.carbs || 0},${item.fat || 0}\n`;
     });
 
     const blob = new Blob([csv], { type: "text/csv;charset=utf-8;" });

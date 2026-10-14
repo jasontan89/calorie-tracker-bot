@@ -407,12 +407,12 @@ function getMetabolicStage(elapsedHours: number) {
 
 function formatFastingSummary(fast: any) {
   const start = new Date(fast.start_time).getTime();
-  const now = Date.now();
-  const elapsedMs = Math.max(0, now - start);
+  const effectiveEnd = fast.end_time ? new Date(fast.end_time).getTime() : Date.now();
+  const elapsedMs = Math.max(0, effectiveEnd - start);
   const elapsedHours = elapsedMs / (1000 * 60 * 60);
   const targetHours = Number(fast.target_hours) || 16;
   const targetEndMs = start + targetHours * 60 * 60 * 1000;
-  const remainingMs = Math.max(0, targetEndMs - now);
+  const remainingMs = Math.max(0, targetEndMs - effectiveEnd);
 
   const elapsedH = Math.floor(elapsedHours);
   const elapsedM = Math.floor((elapsedMs % (1000 * 60 * 60)) / (1000 * 60));
@@ -421,7 +421,7 @@ function formatFastingSummary(fast: any) {
   const remM = Math.floor((remainingMs % (1000 * 60 * 60)) / (1000 * 60));
 
   const pct = Math.min(100, Math.round((elapsedHours / targetHours) * 100));
-  const isGoalReached = now >= targetEndMs;
+  const isGoalReached = effectiveEnd >= targetEndMs;
 
   const targetDateObj = new Date(targetEndMs);
   const targetTimeStr = new Intl.DateTimeFormat("en-SG", {
@@ -431,7 +431,7 @@ function formatFastingSummary(fast: any) {
     hour12: true
   }).format(targetDateObj);
   const targetDateStr = getSGTDateStr(targetDateObj);
-  const targetDayStr = getSGTRelativeDayStr(targetDateObj, new Date(now));
+  const targetDayStr = getSGTRelativeDayStr(targetDateObj, new Date(effectiveEnd));
   const targetDisplay = `${targetDayStr} at ${targetTimeStr} (SGT)`;
   const metabolicStage = getMetabolicStage(elapsedHours);
 
@@ -1086,9 +1086,12 @@ bot.command("export", async (ctx) => {
       minute: "2-digit",
       hour12: false
     }).format(d);
-    const safeName = `"${(log.food_name || "").replace(/"/g, '""')}"`;
+    let safeName = (log.food_name || "").replace(/"/g, '""');
+    if (/^[=\+\-\@\t\r]/.test(safeName)) {
+      safeName = `'${safeName}`;
+    }
     const meal = log.meal_type || "Meal";
-    csv += `${dateStr},${timeStr},${meal},${safeName},${log.calories},${log.protein || 0},${log.carbs || 0},${log.fat || 0}\n`;
+    csv += `${dateStr},${timeStr},${meal},"${safeName}",${log.calories},${log.protein || 0},${log.carbs || 0},${log.fat || 0}\n`;
   }
 
   const fileBytes = new TextEncoder().encode(csv);
@@ -1535,7 +1538,7 @@ bot.command("leaderboard", async (ctx) => {
   const userIds = members.map(m => m.user_id);
   const sevenDaysAgoIso = getSGTStartOfDayISO(new Date(new Date().getTime() - 6 * 24 * 60 * 60 * 1000));
 
-  const { data: profiles } = await supabase.from("user_profiles").select("user_id, streak_count, first_name, username").in("user_id", userIds);
+  const { data: profiles } = await supabase.from("user_profiles").select("user_id, streak_count, first_name, username, last_log_date").in("user_id", userIds);
   const { data: logs } = await supabase.from("food_logs").select("user_id, created_at").in("user_id", userIds).gte("created_at", sevenDaysAgoIso);
 
   const userDaysMap: Record<number, Set<string>> = {};
@@ -1546,13 +1549,16 @@ bot.command("leaderboard", async (ctx) => {
     if (log.user_id in userDaysMap) userDaysMap[log.user_id].add(sgtDate);
   });
 
-  const profileMap = new Map((profiles ?? []).map(p => [p.user_id, p]));
+  const todayStr = getSGTDateStr();
+  const yesterdayStr = getSGTDateStr(new Date(Date.now() - 86400000));
+  const profileMap = new Map<number, any>((profiles ?? []).map((p: any) => [p.user_id, p]));
   const rankings = userIds.map(uid => {
-    const p = profileMap.get(uid);
+    const p: any = profileMap.get(uid);
     const firstName = p?.first_name;
     const username = p?.username;
     const daysCount = userDaysMap[uid]?.size ?? 0;
-    const streak = p?.streak_count ?? 0;
+    const isStreakActive = p?.last_log_date === todayStr || p?.last_log_date === yesterdayStr;
+    const streak = isStreakActive ? (p?.streak_count ?? 0) : 0;
     const nameStr = firstName ? (username ? `${firstName} (@${username})` : firstName) : `User ${uid}`;
     return { userId: uid, nameStr, daysCount, streak };
   });
@@ -2205,17 +2211,32 @@ bot.on("message:text", async (ctx) => {
       if (!pending) return ctx.reply("Pending meal not found or expired.");
 
       const items = pending.items || [];
+      const updatedName = newName || (items[0]?.food_name || pending.food_name || "Meal");
       if (items.length > 0) {
         items[0].calories = newCal;
-        if (newName) items[0].food_name = newName;
+        items[0].food_name = updatedName;
+      } else {
+        items.push({
+          food_name: updatedName,
+          portion: "1 serving",
+          calories: newCal,
+          protein: 0,
+          carbs: 0,
+          fat: 0
+        });
       }
 
-      await supabase.from("pending_food_logs").update({ items }).eq("id", pendingId);
+      await supabase.from("pending_food_logs").update({
+        food_name: updatedName,
+        calories: newCal,
+        items
+      }).eq("id", pendingId);
+
       const keyboard = new InlineKeyboard()
         .text("✅ Confirm & Log", `confirm:${pendingId}`)
         .text("❌ Cancel", `cancel:${pendingId}`);
 
-      return ctx.reply(`✏️ Updated to *${items[0].food_name}* (${newCal} kcal). Ready to log?`, { parse_mode: "Markdown", reply_markup: keyboard });
+      return ctx.reply(`✏️ Updated to *${escapeMarkdown(updatedName)}* (${newCal} kcal). Ready to log?`, { parse_mode: "Markdown", reply_markup: keyboard });
     }
     return;
   }
@@ -2231,61 +2252,72 @@ async function sendCronReminders(type: "midday" | "night" | "weekly") {
   if (!users || users.length === 0) return;
 
   const sgtStartIso = getSGTStartOfDayISO();
+  const startTime = Date.now();
 
   for (const user of users) {
+    // Prevent Edge Function wall-clock timeout (max 48s elapsed)
+    if (Date.now() - startTime > 48000) {
+      console.warn(`sendCronReminders: Approaching execution timeout (48s), terminating batch gracefully.`);
+      break;
+    }
+
     const userId = user.user_id;
     const personaStyle = user.persona || "sarcastic";
 
-    if (type === "weekly") {
-      try {
-        const info = await generateWeeklyInfographicData(userId);
-        const weeklyCoaching = await generateAICoaching(userId, "weekly");
-        const header = personaStyle === "supportive"
-          ? "💖 *Weekly Nutrition Report Card (SGT)*"
-          : personaStyle === "sergeant"
-          ? "🪖 *Weekly Nutrition Debrief (SGT)*"
-          : "🤖 *Weekly Nutrition Report Card (SGT)*";
+    try {
+      if (type === "weekly") {
+        try {
+          const info = await generateWeeklyInfographicData(userId);
+          const weeklyCoaching = await generateAICoaching(userId, "weekly");
+          const header = personaStyle === "supportive"
+            ? "💖 *Weekly Nutrition Report Card (SGT)*"
+            : personaStyle === "sergeant"
+            ? "🪖 *Weekly Nutrition Debrief (SGT)*"
+            : "🤖 *Weekly Nutrition Report Card (SGT)*";
 
-        let caption =
-          `${header}\n\n` +
-          `🏆 *Grade:* *${info.grade}* | 🔥 *Streak:* *${info.streak} days*\n` +
-          `📊 *7-Day Avg:* *${info.dailyAverages} kcal / day* (Goal: ${info.target} kcal)\n` +
-          `🥩 Protein: *${info.totalProtein}g* | 🍚 Carbs: *${info.totalCarbs}g* | 🥑 Fats: *${info.totalFat}g*\n\n`;
+          let caption =
+            `${header}\n\n` +
+            `🏆 *Grade:* *${info.grade}* | 🔥 *Streak:* *${info.streak} days*\n` +
+            `📊 *7-Day Avg:* *${info.dailyAverages} kcal / day* (Goal: ${info.target} kcal)\n` +
+            `🥩 Protein: *${info.totalProtein}g* | 🍚 Carbs: *${info.totalCarbs}g* | 🥑 Fats: *${info.totalFat}g*\n\n`;
 
-        if (weeklyCoaching) caption += `📝 *Coach Review:*\n_${escapeMarkdown(weeklyCoaching)}_\n\n`;
-        caption += `Tap below to open your interactive dashboard!`;
+          if (weeklyCoaching) caption += `📝 *Coach Review:*\n_${escapeMarkdown(weeklyCoaching)}_\n\n`;
+          caption += `Tap below to open your interactive dashboard!`;
 
-        const keyboard = new InlineKeyboard().webApp("📱 Open Dashboard", WEBAPP_URL);
-        await bot.api.sendPhoto(userId, info.chartUrl, { caption, parse_mode: "Markdown", reply_markup: keyboard });
-      } catch (err) {
-        console.error(`Failed to send weekly infographic to ${userId}:`, err);
+          const keyboard = new InlineKeyboard().webApp("📱 Open Dashboard", WEBAPP_URL);
+          await bot.api.sendPhoto(userId, info.chartUrl, { caption, parse_mode: "Markdown", reply_markup: keyboard });
+        } catch (err) {
+          console.error(`Failed to send weekly infographic to ${userId}:`, err);
+        }
+        continue;
       }
-      continue;
-    }
 
-    const { data: logs } = await supabase.from("food_logs").select("id").eq("user_id", userId).gte("created_at", sgtStartIso);
-    const logCount = logs?.length ?? 0;
+      const { data: logs } = await supabase.from("food_logs").select("id").eq("user_id", userId).gte("created_at", sgtStartIso);
+      const logCount = logs?.length ?? 0;
 
-    if (type === "midday" && logCount === 0) {
-      try {
-        await bot.api.sendMessage(
-          userId,
-          `🔔 *Daily Check-in Reminder (SGT)*\n\nYou haven't logged any meals today! Did you eat breakfast or lunch? Send a photo 📸 or voice note 🎙️ to keep your streak alive!`,
-          { parse_mode: "Markdown" }
-        );
-      } catch (err) {}
-    } else if (type === "night") {
-      const dailyCoaching = await generateAICoaching(userId, "daily");
-      const safeDailyCoaching = dailyCoaching ? escapeMarkdown(dailyCoaching) : null;
-      const roastHeader = personaStyle === "supportive" ? "💖 *Daily Coach Note:*" : personaStyle === "sergeant" ? "🪖 *Sergeant's Report:*" : "😏 *Daily AI Roast:*";
-      const coachingText = safeDailyCoaching ? `\n\n${roastHeader}\n_${safeDailyCoaching}_` : "";
+      if (type === "midday" && logCount === 0) {
+        try {
+          await bot.api.sendMessage(
+            userId,
+            `🔔 *Daily Check-in Reminder (SGT)*\n\nYou haven't logged any meals today! Did you eat breakfast or lunch? Send a photo 📸 or voice note 🎙️ to keep your streak alive!`,
+            { parse_mode: "Markdown" }
+          );
+        } catch (err) {}
+      } else if (type === "night") {
+        const dailyCoaching = await generateAICoaching(userId, "daily");
+        const safeDailyCoaching = dailyCoaching ? escapeMarkdown(dailyCoaching) : null;
+        const roastHeader = personaStyle === "supportive" ? "💖 *Daily Coach Note:*" : personaStyle === "sergeant" ? "🪖 *Sergeant's Report:*" : "😏 *Daily AI Roast:*";
+        const coachingText = safeDailyCoaching ? `\n\n${roastHeader}\n_${safeDailyCoaching}_` : "";
 
-      try {
-        const text = logCount === 0
-          ? `🔔 *Daily Check-in Reminder (SGT)*\n\nYou haven't logged any meals today. Record what you ate to finish strong! 📸`
-          : `🔔 *Daily Check-in Reminder (SGT)*\n\nYou've logged your meals today!${coachingText}`;
-        await bot.api.sendMessage(userId, text, { parse_mode: "Markdown" });
-      } catch (err) {}
+        try {
+          const text = logCount === 0
+            ? `🔔 *Daily Check-in Reminder (SGT)*\n\nYou haven't logged any meals today. Record what you ate to finish strong! 📸`
+            : `🔔 *Daily Check-in Reminder (SGT)*\n\nYou've logged your meals today!${coachingText}`;
+          await bot.api.sendMessage(userId, text, { parse_mode: "Markdown" });
+        } catch (err) {}
+      }
+    } catch (userErr) {
+      console.error(`Error in sendCronReminders for user ${userId}:`, userErr);
     }
   }
 }
@@ -2386,19 +2418,23 @@ async function validateTelegramInitData(initData: string, botTokens: (string | u
 
     const params = new URLSearchParams(cleanInitData);
     const hash = params.get("hash");
+    if (!hash) return { valid: false };
+
+    // Replay protection: require auth_date within the last 24 hours
+    const authDate = Number(params.get("auth_date"));
+    if (!authDate || Math.abs(Date.now() / 1000 - authDate) > 86400) {
+      console.warn("InitData auth_date expired or invalid:", authDate);
+      return { valid: false };
+    }
 
     const userRaw = params.get("user");
-    let user = null;
+    let user: any = null;
     if (userRaw) {
       try {
         user = JSON.parse(userRaw);
       } catch (e) {}
     }
-
-    if (!hash) {
-      if (user && user.id) return { valid: true, user };
-      return { valid: false };
-    }
+    if (!user || !user.id) return { valid: false };
 
     params.delete("hash");
     const keys = Array.from(params.keys()).sort();
@@ -2438,12 +2474,6 @@ async function validateTelegramInitData(initData: string, botTokens: (string | u
       }
     }
 
-    // If HMAC check didn't match candidate tokens but valid Telegram user payload exists, safely permit
-    if (user && user.id) {
-      console.warn("InitData HMAC verification bypassed for valid user payload:", user.id);
-      return { valid: true, user };
-    }
-
     return { valid: false };
   } catch (err) {
     console.error("InitData validation error:", err);
@@ -2458,11 +2488,19 @@ const telegramSecretToken = Deno.env.get("TELEGRAM_SECRET_TOKEN");
 const cronSecret = Deno.env.get("CRON_SECRET");
 
 Deno.serve(async (req) => {
-  const requestOrigin = req.headers.get("origin") || "*";
+  const requestOrigin = req.headers.get("origin") || "";
+  const isAllowedOrigin =
+    !requestOrigin ||
+    requestOrigin === "null" ||
+    requestOrigin.endsWith(".github.io") ||
+    requestOrigin.includes("telegram.org") ||
+    requestOrigin.startsWith("http://localhost") ||
+    requestOrigin.startsWith("http://127.0.0.1");
+
   const corsHeaders = {
-    "Access-Control-Allow-Origin": requestOrigin === "null" ? "*" : requestOrigin,
+    "Access-Control-Allow-Origin": isAllowedOrigin ? (requestOrigin === "null" || !requestOrigin ? "*" : requestOrigin) : "https://jasontan89.github.io",
     "Access-Control-Allow-Methods": "GET, POST, OPTIONS",
-    "Access-Control-Allow-Headers": "Authorization, Content-Type, X-Telegram-Init-Data, Accept, apikey, x-client-info",
+    "Access-Control-Allow-Headers": "Authorization, Content-Type, X-Telegram-Init-Data, Accept, apikey, x-client-info, x-admin-secret, x-cron-secret",
     "Access-Control-Max-Age": "86400",
   };
 
@@ -2516,20 +2554,16 @@ Deno.serve(async (req) => {
       ];
 
       const auth = await validateTelegramInitData(initData, candidateTokens);
-      let userId: number;
 
-      if (auth.valid && auth.user?.id) {
-        userId = Number(auth.user.id);
-        await ensureUserProfile(userId, auth.user.first_name, auth.user.username);
-      } else {
-        const queryUserId = url.searchParams.get("userId");
-        if (queryUserId && !isNaN(Number(queryUserId))) {
-          userId = Number(queryUserId);
-        } else {
-          // Default to the main account (Jason)
-          userId = 40929622;
-        }
+      if (!auth.valid || !auth.user?.id) {
+        return new Response(JSON.stringify({ error: "Unauthorized: Invalid or missing Telegram authentication" }), {
+          status: 401,
+          headers: { ...corsHeaders, "Content-Type": "application/json" }
+        });
       }
+
+      const userId = Number(auth.user.id);
+      await ensureUserProfile(userId, auth.user.first_name, auth.user.username);
 
       if (apiAction === "dashboard") {
         const sgtStartIso = getSGTStartOfDayISO();
@@ -2605,6 +2639,14 @@ Deno.serve(async (req) => {
       }
 
       if (apiAction === "setup_bot_profile") {
+        const adminSecret = cronSecret || supabaseServiceKey;
+        const reqSecret = req.headers.get("x-admin-secret") || url.searchParams.get("secret");
+        if (!adminSecret || reqSecret !== adminSecret) {
+          return new Response(JSON.stringify({ error: "Unauthorized: Missing or invalid admin secret" }), {
+            status: 401,
+            headers: { ...corsHeaders, "Content-Type": "application/json" }
+          });
+        }
         await registerBotCommandsOnce(true);
         return new Response(JSON.stringify({ success: true, message: "Commands, description, and WebApp menu button registered successfully" }), {
           status: 200,
@@ -2863,9 +2905,12 @@ Deno.serve(async (req) => {
             minute: "2-digit",
             hour12: false
           }).format(d);
-          const safeName = `"${(log.food_name || "").replace(/"/g, '""')}"`;
+          let safeName = (log.food_name || "").replace(/"/g, '""');
+          if (/^[=\+\-\@\t\r]/.test(safeName)) {
+            safeName = `'${safeName}`;
+          }
           const meal = log.meal_type || "Meal";
-          csv += `${dateStr},${timeStr},${meal},${safeName},${log.calories},${log.protein || 0},${log.carbs || 0},${log.fat || 0}\n`;
+          csv += `${dateStr},${timeStr},${meal},"${safeName}",${log.calories},${log.protein || 0},${log.carbs || 0},${log.fat || 0}\n`;
         }
 
         const fileBytes = new TextEncoder().encode(csv);
@@ -2915,10 +2960,12 @@ Deno.serve(async (req) => {
       const querySecret = url.searchParams.get("secret");
       const providedSecret = querySecret || headerSecret || authHeader;
 
-      const isAuthorized = !cronSecret ||
-        providedSecret === cronSecret ||
-        providedSecret === "calorie-cron-2026" ||
-        providedSecret === supabaseServiceKey;
+      if (!cronSecret) {
+        console.error("CRON_SECRET environment variable is not configured.");
+        return new Response("Cron endpoint unconfigured", { status: 500 });
+      }
+
+      const isAuthorized = providedSecret === cronSecret || providedSecret === supabaseServiceKey;
 
       if (!isAuthorized) {
         return new Response("Unauthorized cron trigger", { status: 401 });
@@ -2953,12 +3000,12 @@ Deno.serve(async (req) => {
       });
     }
 
-    // Register bot commands & Chat Menu Button once on startup
-    await registerBotCommandsOnce();
-
     return await handleUpdate(req);
   } catch (err) {
     console.error("Unhandled server error:", err);
-    return new Response(String(err), { status: 500 });
+    return new Response(JSON.stringify({ error: "Internal server error" }), {
+      status: 500,
+      headers: { ...corsHeaders, "Content-Type": "application/json" }
+    });
   }
 });
