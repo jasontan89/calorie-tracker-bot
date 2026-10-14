@@ -2535,6 +2535,47 @@ Deno.serve(async (req) => {
         });
       }
 
+      // ── Admin Actions (Authenticated via adminSecret) ─────────────────────────
+      if (apiAction === "setup_bot_profile" || apiAction === "setup_webhook" || apiAction === "webhook_info") {
+        const adminSecret = cronSecret || supabaseServiceKey;
+        const reqSecret = req.headers.get("x-admin-secret") || url.searchParams.get("secret");
+        if (!adminSecret || reqSecret !== adminSecret) {
+          return new Response(JSON.stringify({ error: "Unauthorized: Missing or invalid admin secret" }), {
+            status: 401,
+            headers: { ...corsHeaders, "Content-Type": "application/json" }
+          });
+        }
+
+        if (apiAction === "setup_bot_profile") {
+          await registerBotCommandsOnce(true);
+          return new Response(JSON.stringify({ success: true, message: "Commands, description, and WebApp menu button registered successfully" }), {
+            status: 200,
+            headers: { ...corsHeaders, "Content-Type": "application/json" }
+          });
+        }
+
+        if (apiAction === "setup_webhook") {
+          const webhookUrl = `${supabaseUrl}/functions/v1/telegram-bot`;
+          await bot.api.setWebhook(webhookUrl, {
+            secret_token: telegramSecretToken || undefined,
+            allowed_updates: ["message", "callback_query"]
+          });
+          const info = await bot.api.getWebhookInfo();
+          return new Response(JSON.stringify({ success: true, webhook_info: info }), {
+            status: 200,
+            headers: { ...corsHeaders, "Content-Type": "application/json" }
+          });
+        }
+
+        if (apiAction === "webhook_info") {
+          const info = await bot.api.getWebhookInfo();
+          return new Response(JSON.stringify({ success: true, webhook_info: info }), {
+            status: 200,
+            headers: { ...corsHeaders, "Content-Type": "application/json" }
+          });
+        }
+      }
+
       const authHeader = req.headers.get("authorization") || "";
       const customHeader = req.headers.get("x-telegram-init-data") || "";
       const queryInitData = url.searchParams.get("initData") || "";
@@ -2638,21 +2679,6 @@ Deno.serve(async (req) => {
         });
       }
 
-      if (apiAction === "setup_bot_profile") {
-        const adminSecret = cronSecret || supabaseServiceKey;
-        const reqSecret = req.headers.get("x-admin-secret") || url.searchParams.get("secret");
-        if (!adminSecret || reqSecret !== adminSecret) {
-          return new Response(JSON.stringify({ error: "Unauthorized: Missing or invalid admin secret" }), {
-            status: 401,
-            headers: { ...corsHeaders, "Content-Type": "application/json" }
-          });
-        }
-        await registerBotCommandsOnce(true);
-        return new Response(JSON.stringify({ success: true, message: "Commands, description, and WebApp menu button registered successfully" }), {
-          status: 200,
-          headers: { ...corsHeaders, "Content-Type": "application/json" }
-        });
-      }
 
       if (apiAction === "delete_food" && req.method === "POST") {
         const body = await req.json();
@@ -2980,14 +3006,6 @@ Deno.serve(async (req) => {
       }
     }
 
-    // ── Telegram Webhook ──────────────────────────────────────────────────────
-    if (telegramSecretToken) {
-      const incomingSecret = req.headers.get("x-telegram-bot-api-secret-token");
-      if (incomingSecret !== telegramSecretToken) {
-        return new Response("Unauthorized webhook request", { status: 401 });
-      }
-    }
-
     // Return health check for GET requests
     if (req.method === "GET") {
       return new Response(JSON.stringify({
@@ -2998,6 +3016,14 @@ Deno.serve(async (req) => {
       }), {
         headers: { ...corsHeaders, "Content-Type": "application/json" }
       });
+    }
+
+    // ── Telegram Webhook ──────────────────────────────────────────────────────
+    if (telegramSecretToken) {
+      const incomingSecret = req.headers.get("x-telegram-bot-api-secret-token");
+      if (incomingSecret !== telegramSecretToken) {
+        return new Response("Unauthorized webhook request", { status: 401 });
+      }
     }
 
     return await handleUpdate(req);
