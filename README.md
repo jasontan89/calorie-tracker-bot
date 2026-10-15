@@ -100,7 +100,8 @@ group_members")]
 - **Two Logging Modes:**
   - **Itemized Mode:** Breaks dishes down into individual ingredients with separate macro counts.
   - **Single Combined Mode:** Aggregates the entire meal into one consolidated record.
-- **Inline Confirmation:** Displays an interactive inline keyboard (`✅ Confirm & Log`, `✏️ Adjust`, `⭐ Save as Preset`, `❌ Cancel`) before saving to the database.
+- **Conversational Meal Adjustments:** Tap `🗣️ AI Adjust` or type `/adjust` to tweak meal components naturally using text or voice (*"Only ate half the rice"*, *"No cheese"*, *"Add an iced latte"*). Gemini calculates the exact diff with in-place +/- calorie change highlights.
+- **Inline Confirmation:** Displays an interactive inline keyboard (`✅ Confirm & Log`, `🗣️ AI Adjust`, `✏️ Manual Edit`, `⭐ Preset`, `❌ Cancel`) before saving to the database.
 
 ### 2. Interactive WebApp Dashboard (Telegram Mini App)
 Accessible via the persistent `📊 Dashboard` menu button inside Telegram or on GitHub Pages:
@@ -162,6 +163,7 @@ Select from three distinct AI coach personalities via `/persona` or the WebApp S
 | Command | Description | Example |
 |---|---|---|
 | `/today` | 📅 View today's summary, macros, calories, and consistency streak | `/today` |
+| `/adjust` | 🗣️ AI-assisted conversational tweak for your last logged meal | `/adjust` |
 | `/fast` | ⏰ Launch or manage the Intermittent Fasting timer | `/fast 16` |
 | `/barcode` | 📸 Scan or look up a packaged food barcode | `/barcode 3017620422003` |
 | `/weeklyreport` | 📑 Generate and receive a 7-day visual report card graphic | `/weeklyreport` |

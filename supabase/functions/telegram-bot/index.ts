@@ -47,6 +47,7 @@ async function registerBotCommandsOnce(force: boolean = false) {
   try {
     await bot.api.setMyCommands([
       { command: "today", description: "📅 Today's Summary & Progress" },
+      { command: "adjust", description: "🗣️ AI Adjust Last Logged Meal" },
       { command: "fast", description: "⏰ Intermittent Fasting Timer" },
       { command: "barcode", description: "📸 Scan & Look Up Food Barcode" },
       { command: "weeklyreport", description: "📑 7-Day Visual Report Card" },
@@ -1010,6 +1011,58 @@ bot.command("help", async (ctx) => {
   await ctx.reply(helpText, { parse_mode: "Markdown", reply_markup: keyboard });
 });
 
+bot.command("adjust", async (ctx) => {
+  const userId = ctx.from?.id;
+  if (!userId) return;
+
+  await ensureUserProfile(userId, ctx.from?.first_name, ctx.from?.username);
+
+  const { data: lastLog } = await supabase
+    .from("food_logs")
+    .select("*")
+    .eq("user_id", userId)
+    .order("created_at", { ascending: false })
+    .limit(1)
+    .maybeSingle();
+
+  if (!lastLog) {
+    return ctx.reply("You haven't logged any meals today yet! Send a food photo, text, or voice note to log your first meal.");
+  }
+
+  const items = [
+    {
+      food_name: lastLog.food_name,
+      portion: "1 serving",
+      calories: lastLog.calories,
+      protein: lastLog.protein || 0,
+      carbs: lastLog.carbs || 0,
+      fat: lastLog.fat || 0
+    }
+  ];
+
+  const sessionData = {
+    target_type: "logged",
+    target_id: lastLog.id,
+    message_id: ctx.message?.message_id,
+    chat_id: ctx.chat?.id,
+    meal_type: lastLog.meal_type || "Meal",
+    original_items: items,
+    original_calories: lastLog.calories,
+    original_name: lastLog.food_name,
+    expires_at: new Date(Date.now() + 10 * 60 * 1000).toISOString()
+  };
+
+  await supabase.from("user_profiles").update({ active_adjustment: sessionData }).eq("user_id", userId);
+
+  const cancelKb = new InlineKeyboard().text("❌ Cancel", "cancel_adj");
+  await ctx.reply(
+    `💬 *Adjusting your last meal:* *${escapeMarkdown(lastLog.food_name)}* (${lastLog.calories} kcal)\n\n` +
+    `Tell me what you'd like to tweak (e.g. _"Only had half the portion"_, _"Swap rice to cauliflower rice"_, _"Add an egg"_), or send a voice note 🎙️.\n\n` +
+    `_Type /cancel or tap below to exit._`,
+    { parse_mode: "Markdown", reply_markup: cancelKb }
+  );
+});
+
 bot.command("target", async (ctx) => {
   const userId = ctx.from?.id;
   if (!userId) return;
@@ -1746,9 +1799,10 @@ async function processFoodWithGemini(
 
     const keyboard = new InlineKeyboard()
       .text("✅ Confirm & Log", `confirm:${pendingId}`)
-      .text("✏️ Adjust", `edit:${pendingId}`)
+      .text("🗣️ AI Adjust", `ai_adj:pending:${pendingId}`)
       .row()
-      .text("⭐ Save as Preset", `save_preset:${pendingId}`)
+      .text("✏️ Manual Edit", `edit:${pendingId}`)
+      .text("⭐ Preset", `save_preset:${pendingId}`)
       .text("❌ Cancel", `cancel:${pendingId}`);
 
     await ctx.reply(msg, { parse_mode: "Markdown", reply_markup: keyboard });
@@ -1758,12 +1812,257 @@ async function processFoodWithGemini(
   }
 }
 
+// ── Conversational Meal Adjustment Helper (Gemini 3.5 Flash Lite) ───────────
+
+async function adjustFoodWithGemini(
+  ctx: any,
+  session: any,
+  input: { type: "text" | "voice"; content: string; mimeType?: string }
+) {
+  const userId = ctx.from?.id;
+  if (!userId) return;
+
+  const typingAction = input.type === "voice" ? "record_voice" : "typing";
+  try { await ctx.replyWithChatAction(typingAction); } catch (e) {}
+
+  const { data: profile } = await supabase.from("user_profiles").select("persona").eq("user_id", userId).maybeSingle();
+  const persona = profile?.persona || "sarcastic";
+
+  let personaInstruction = "";
+  if (persona === "supportive") {
+    personaInstruction = "Provide warm, positive encouragement and celebrate their healthy choices. Keep response friendly.";
+  } else if (persona === "sergeant") {
+    personaInstruction = "Adopt a strict, militant Drill Sergeant tone. Demand discipline, no excuses, and relentless consistency.";
+  } else {
+    personaInstruction = "Adopt a sarcastic, witty, playfully roasting tone. Make funny banter about their food choices.";
+  }
+
+  const systemPrompt =
+    `You are a world-class AI Nutritionist and Calorie Tracker.\n` +
+    `The user wants to adjust/modify an existing meal they previously logged or are about to log.\n\n` +
+    `ORIGINAL MEAL ITEMS:\n` +
+    `${JSON.stringify(session.original_items, null, 2)}\n\n` +
+    `CRITICAL OUTPUT FORMAT REQUIREMENTS:\n` +
+    `You MUST respond ONLY with a single JSON object. No Markdown code fences, no extra text.\n` +
+    `Schema:\n` +
+    `{\n` +
+    `  "intent": "modify" | "cancel" | "ambiguous",\n` +
+    `  "clarification_question": "string or null",\n` +
+    `  "changes_summary": "Short 1-sentence summary of modifications (e.g. Halved white rice (-120 kcal), removed gravy)",\n` +
+    `  "coaching_message": "string (1-2 sentences in requested persona tone)",\n` +
+    `  "items": [\n` +
+    `    {\n` +
+    `      "food_name": "Short Name",\n` +
+    `      "portion": "e.g. 1/2 cup rice",\n` +
+    `      "calories": number (integer kcal),\n` +
+    `      "protein": number (grams),\n` +
+    `      "carbs": number (grams),\n` +
+    `      "fat": number (grams),\n` +
+    `      "change_note": "Short note of difference if changed, e.g. '-120 kcal (half portion)', 'new item', or null if unchanged"\n` +
+    `    }\n` +
+    `  ]\n` +
+    `}\n\n` +
+    `INTENT RULES:\n` +
+    `- If user asks to cancel, keep original, or says 'never mind', set "intent": "cancel".\n` +
+    `- If user input is unclear, set "intent": "ambiguous" and provide a helpful "clarification_question".\n` +
+    `- If user modifies, removes, or adds ingredients/portions, set "intent": "modify", recalculate all items, and provide "changes_summary".\n` +
+    `Persona: ${personaInstruction}`;
+
+  const contents: any[] = [];
+  if (input.type === "voice") {
+    contents.push({
+      role: "user",
+      parts: [
+        { inlineData: { mimeType: input.mimeType || "audio/ogg", data: input.content } },
+        { text: "Listen to this voice note describing adjustments to the meal, recalculate calories & macros, and respond in specified JSON schema." }
+      ]
+    });
+  } else {
+    contents.push({
+      role: "user",
+      parts: [
+        { text: `User adjustment instruction: "${input.content}". Please recalculate calories and macronutrients accordingly.` }
+      ]
+    });
+  }
+
+  try {
+    const controller = new AbortController();
+    const timeoutId = setTimeout(() => controller.abort(), 8000);
+
+    const res = await fetch(`https://generativelanguage.googleapis.com/v1beta/models/gemini-3.5-flash-lite:generateContent?key=${geminiApiKey}`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      signal: controller.signal,
+      body: JSON.stringify({
+        contents: contents,
+        systemInstruction: { parts: [{ text: systemPrompt }] },
+        generationConfig: {
+          responseMimeType: "application/json",
+          temperature: 0.2
+        }
+      })
+    });
+    clearTimeout(timeoutId);
+
+    const aiRes = await res.json();
+    if (!res.ok) {
+      console.error("Gemini adjustment API error:", res.status, aiRes);
+      return ctx.reply("Sorry, I couldn't process that adjustment right now. Please try again!");
+    }
+
+    const rawText = aiRes.candidates?.[0]?.content?.parts?.[0]?.text;
+    if (!rawText) return ctx.reply("Sorry, I couldn't process that adjustment. Please try again!");
+
+    const cleanedJson = rawText.replace(/```json\s*|```/g, "").trim();
+    const parsed = JSON.parse(cleanedJson);
+
+    if (parsed.intent === "cancel") {
+      await supabase.from("user_profiles").update({ active_adjustment: null }).eq("user_id", userId);
+      return ctx.reply("❌ Adjustment cancelled. Kept your meal as originally estimated!");
+    }
+
+    if (parsed.intent === "ambiguous") {
+      const q = parsed.clarification_question || "Could you clarify what you'd like to adjust? (e.g. 'half the rice' or 'no sauce')";
+      const cancelKb = new InlineKeyboard().text("❌ Cancel Adjustment", "cancel_adj");
+      return ctx.reply(`🤔 ${escapeMarkdown(q)}`, { parse_mode: "Markdown", reply_markup: cancelKb });
+    }
+
+    const newItems = parsed.items || [];
+    if (newItems.length === 0) {
+      return ctx.reply("Couldn't compute adjusted items. Please try describing your change again.");
+    }
+
+    let totalC = 0, totalP = 0, totalCr = 0, totalF = 0;
+    let itemsText = "";
+    const itemNamesList: string[] = [];
+
+    newItems.forEach((item: any) => {
+      const cal = Math.round(Number(item.calories) || 0);
+      const p = Math.round(Number(item.protein) || 0);
+      const c = Math.round(Number(item.carbs) || 0);
+      const f = Math.round(Number(item.fat) || 0);
+      item.calories = cal;
+      item.protein = p;
+      item.carbs = c;
+      item.fat = f;
+
+      totalC += cal;
+      totalP += p;
+      totalCr += c;
+      totalF += f;
+      itemNamesList.push(item.food_name || "Food Item");
+
+      const safeName = escapeMarkdown(item.food_name || "Food Item");
+      const safePortion = escapeMarkdown(item.portion || "");
+      const note = item.change_note ? ` 🔻 _(${escapeMarkdown(item.change_note)})_` : "";
+      itemsText += `• *${safeName}* (${safePortion}): *${cal} kcal*${note} _(P:${p}g C:${c}g F:${f}g)_\n`;
+    });
+
+    const summaryFoodName = itemNamesList.join(", ").substring(0, 500) || "Meal";
+    const deltaC = totalC - (session.original_calories || 0);
+    const deltaText = deltaC !== 0 ? ` _(${deltaC > 0 ? "+" : ""}${deltaC} kcal)_` : "";
+    const safeSummary = escapeMarkdown(parsed.changes_summary || "");
+    const safeCoaching = escapeMarkdown(parsed.coaching_message || "");
+
+    if (session.target_type === "pending") {
+      await supabase.from("pending_food_logs").update({
+        food_name: summaryFoodName,
+        calories: totalC,
+        protein: totalP,
+        carbs: totalCr,
+        fat: totalF,
+        items: newItems
+      }).eq("id", session.target_id).eq("user_id", userId);
+
+      await supabase.from("user_profiles").update({
+        active_adjustment: {
+          ...session,
+          original_items: newItems,
+          original_calories: totalC,
+          original_name: summaryFoodName,
+          expires_at: new Date(Date.now() + 10 * 60 * 1000).toISOString()
+        }
+      }).eq("user_id", userId);
+
+      const cardText =
+        `🍽️ *Updated Meal (${escapeMarkdown(session.meal_type || "Meal")}):*\n\n` +
+        itemsText +
+        `\n📊 *Total:* *${totalC} kcal*${deltaText} | 🥩 *${totalP}g P* | 🍚 *${totalCr}g C* | 🥑 *${totalF}g F*\n\n` +
+        (safeSummary ? `🔄 *Changes:* _${safeSummary}_\n\n` : "") +
+        (safeCoaching ? `_${safeCoaching}_\n\n` : "") +
+        `Ready to log this updated meal?`;
+
+      const keyboard = new InlineKeyboard()
+        .text("✅ Confirm & Log", `confirm:${session.target_id}`)
+        .text("🗣️ Adjust More", `ai_adj:pending:${session.target_id}`)
+        .row()
+        .text("✏️ Manual Edit", `edit:${session.target_id}`)
+        .text("❌ Cancel", `cancel:${session.target_id}`);
+
+      let edited = false;
+      if (session.chat_id && session.message_id) {
+        try {
+          await ctx.api.editMessageText(session.chat_id, session.message_id, cardText, {
+            parse_mode: "Markdown",
+            reply_markup: keyboard
+          });
+          edited = true;
+          await ctx.reply("✨ Meal updated above! Tap *Confirm & Log* when ready.", { parse_mode: "Markdown" });
+        } catch (e) {
+          edited = false;
+        }
+      }
+
+      if (!edited) {
+        const sent = await ctx.reply(cardText, { parse_mode: "Markdown", reply_markup: keyboard });
+        await supabase.from("user_profiles").update({
+          active_adjustment: {
+            ...session,
+            message_id: sent.message_id
+          }
+        }).eq("user_id", userId);
+      }
+    } else if (session.target_type === "logged") {
+      await supabase.from("food_logs").update({
+        food_name: summaryFoodName,
+        calories: totalC,
+        protein: totalP,
+        carbs: totalCr,
+        fat: totalF
+      }).eq("id", session.target_id).eq("user_id", userId);
+
+      await supabase.from("user_profiles").update({ active_adjustment: null }).eq("user_id", userId);
+
+      const confirmMsg =
+        `✅ *Updated Logged Meal:*\n\n` +
+        itemsText +
+        `\n📊 *New Total:* *${totalC} kcal*${deltaText} | 🥩 *${totalP}g P* | 🍚 *${totalCr}g C* | 🥑 *${totalF}g F*\n\n` +
+        (safeSummary ? `🔄 *Changes applied:* _${safeSummary}_\n\n` : "");
+
+      await ctx.reply(confirmMsg, { parse_mode: "Markdown" });
+      await sendTodaySummary(ctx, userId, ctx.from?.first_name, ctx.from?.username);
+    }
+  } catch (err) {
+    console.error("Error in adjustFoodWithGemini:", err);
+    await ctx.reply("An error occurred while updating your meal. Please try again!");
+  }
+}
+
 // ── Bot Event Listeners (Photo & Voice) ──────────────────────────────────────
 
 bot.on("message:photo", async (ctx) => {
   const photo = ctx.message.photo;
   if (!photo || photo.length === 0) return;
-  const bestPhoto = photo[photo.length - 1];
+
+  // Pick optimal resolution: ~800px to 1280px for fast inference without sacrificing detail
+  let bestPhoto = photo[photo.length - 1];
+  for (let i = photo.length - 1; i >= 0; i--) {
+    if ((photo[i].width && photo[i].width <= 1280) || (photo[i].height && photo[i].height <= 1280)) {
+      bestPhoto = photo[i];
+      break;
+    }
+  }
 
   try {
     const file = await ctx.api.getFile(bestPhoto.file_id);
@@ -1788,6 +2087,8 @@ bot.on("message:photo", async (ctx) => {
 bot.on("message:voice", async (ctx) => {
   const voice = ctx.message.voice;
   if (!voice) return;
+  const userId = ctx.from?.id;
+  if (!userId) return;
 
   try {
     const file = await ctx.api.getFile(voice.file_id);
@@ -1797,6 +2098,20 @@ bot.on("message:voice", async (ctx) => {
     const voiceRes = await fetch(fileUrl);
     const arrayBuffer = await voiceRes.arrayBuffer();
     const base64Data = arrayBufferToBase64(arrayBuffer);
+
+    // Check for active adjustment session
+    const { data: profile } = await supabase.from("user_profiles").select("active_adjustment").eq("user_id", userId).maybeSingle();
+    const session = profile?.active_adjustment;
+    const isSessionActive = session && session.expires_at && new Date(session.expires_at) > new Date();
+
+    if (isSessionActive) {
+      await adjustFoodWithGemini(ctx, session, {
+        type: "voice",
+        content: base64Data,
+        mimeType: voice.mime_type || "audio/ogg"
+      });
+      return;
+    }
 
     await processFoodWithGemini(ctx, {
       type: "voice",
@@ -2081,6 +2396,7 @@ bot.callbackQuery(/^confirm:(.+)$/, async (ctx) => {
   if (insErr) return ctx.reply("Failed to log food.");
 
   await supabase.from("pending_food_logs").delete().eq("id", pendingId);
+  await supabase.from("user_profiles").update({ active_adjustment: null }).eq("user_id", userId);
   const streakMsg = await updateStreakAndGetMessage(userId);
   const fastResult = await checkAndAutoStopFast(userId);
 
@@ -2088,10 +2404,13 @@ bot.callbackQuery(/^confirm:(.+)$/, async (ctx) => {
   if (streakMsg) confirmMsg += `\n\n${streakMsg}`;
   if (fastResult?.summaryMsg) confirmMsg += `\n\n${fastResult.summaryMsg}`;
 
+  const postConfirmKeyboard = new InlineKeyboard()
+    .text("🗣️ Adjust This Meal", `ai_adj:last_meal:${userId}`);
+
   try {
-    await ctx.editMessageText(confirmMsg, { parse_mode: "Markdown" });
+    await ctx.editMessageText(confirmMsg, { parse_mode: "Markdown", reply_markup: postConfirmKeyboard });
   } catch (e) {
-    await ctx.reply(confirmMsg, { parse_mode: "Markdown" });
+    await ctx.reply(confirmMsg, { parse_mode: "Markdown", reply_markup: postConfirmKeyboard });
   }
 
   await sendTodaySummary(ctx, userId, ctx.from?.first_name, ctx.from?.username);
@@ -2157,6 +2476,7 @@ bot.callbackQuery(/^cancel:(.+)$/, async (ctx) => {
   await ctx.answerCallbackQuery();
   const pendingId = ctx.match[1];
   await supabase.from("pending_food_logs").delete().eq("id", pendingId).eq("user_id", ctx.from.id);
+  await supabase.from("user_profiles").update({ active_adjustment: null }).eq("user_id", ctx.from.id);
   try {
     await ctx.editMessageText("❌ Meal logging cancelled.");
   } catch (e) {
@@ -2167,7 +2487,111 @@ bot.callbackQuery(/^cancel:(.+)$/, async (ctx) => {
 bot.callbackQuery(/^edit:(.+)$/, async (ctx) => {
   await ctx.answerCallbackQuery();
   const pendingId = ctx.match[1];
-  await ctx.reply(`✏️ To adjust this meal, type: \`/edit_${pendingId} <new calories> [food name]\``);
+  await ctx.reply(`✏️ To manually adjust this meal, type: \`/edit_${pendingId} <new calories> [food name]\``);
+});
+
+bot.callbackQuery(/^ai_adj:pending:(.+)$/, async (ctx) => {
+  await ctx.answerCallbackQuery();
+  const pendingId = ctx.match[1];
+  const userId = ctx.from.id;
+
+  const { data: pending, error: pErr } = await supabase
+    .from("pending_food_logs")
+    .select("*")
+    .eq("id", pendingId)
+    .eq("user_id", userId)
+    .maybeSingle();
+
+  if (pErr || !pending) {
+    return ctx.reply("Pending meal not found or already logged.");
+  }
+
+  const items = pending.items && pending.items.length > 0
+    ? pending.items
+    : [{ food_name: pending.food_name, portion: "1 serving", calories: pending.calories, protein: pending.protein, carbs: pending.carbs, fat: pending.fat }];
+
+  const sessionData = {
+    target_type: "pending",
+    target_id: pendingId,
+    message_id: ctx.callbackQuery.message?.message_id,
+    chat_id: ctx.chat?.id,
+    meal_type: pending.meal_type || getMealType(),
+    original_items: items,
+    original_calories: pending.calories,
+    original_name: pending.food_name,
+    expires_at: new Date(Date.now() + 10 * 60 * 1000).toISOString()
+  };
+
+  await supabase.from("user_profiles").update({ active_adjustment: sessionData }).eq("user_id", userId);
+
+  const cancelKb = new InlineKeyboard().text("❌ Cancel Adjustment", "cancel_adj");
+  await ctx.reply(
+    `💬 *AI Meal Adjustment Active:*\n\n` +
+    `Tell me what to change about this meal (e.g. _"Only had half the rice"_, _"No sauce"_, _"Add an iced latte"_), or send a voice note 🎙️.\n\n` +
+    `_Tap below or type /cancel to keep original._`,
+    { parse_mode: "Markdown", reply_markup: cancelKb }
+  );
+});
+
+bot.callbackQuery(/^ai_adj:last_meal:(\d+)$/, async (ctx) => {
+  await ctx.answerCallbackQuery();
+  const userId = ctx.from.id;
+
+  const { data: lastLog, error: lErr } = await supabase
+    .from("food_logs")
+    .select("*")
+    .eq("user_id", userId)
+    .order("created_at", { ascending: false })
+    .limit(1)
+    .maybeSingle();
+
+  if (lErr || !lastLog) {
+    return ctx.reply("No recent food logs found to adjust.");
+  }
+
+  const items = [
+    {
+      food_name: lastLog.food_name,
+      portion: "1 serving",
+      calories: lastLog.calories,
+      protein: lastLog.protein || 0,
+      carbs: lastLog.carbs || 0,
+      fat: lastLog.fat || 0
+    }
+  ];
+
+  const sessionData = {
+    target_type: "logged",
+    target_id: lastLog.id,
+    message_id: ctx.callbackQuery.message?.message_id,
+    chat_id: ctx.chat?.id,
+    meal_type: lastLog.meal_type || "Meal",
+    original_items: items,
+    original_calories: lastLog.calories,
+    original_name: lastLog.food_name,
+    expires_at: new Date(Date.now() + 10 * 60 * 1000).toISOString()
+  };
+
+  await supabase.from("user_profiles").update({ active_adjustment: sessionData }).eq("user_id", userId);
+
+  const cancelKb = new InlineKeyboard().text("❌ Cancel Adjustment", "cancel_adj");
+  await ctx.reply(
+    `💬 *Adjusting Logged Meal:* *${escapeMarkdown(lastLog.food_name)}* (${lastLog.calories} kcal)\n\n` +
+    `Tell me what changed (e.g. _"Forgot to mention I only ate half"_, _"Remove the soda"_), or send a voice note 🎙️.\n\n` +
+    `_Tap below or type /cancel to exit._`,
+    { parse_mode: "Markdown", reply_markup: cancelKb }
+  );
+});
+
+bot.callbackQuery("cancel_adj", async (ctx) => {
+  await ctx.answerCallbackQuery();
+  const userId = ctx.from.id;
+  await supabase.from("user_profiles").update({ active_adjustment: null }).eq("user_id", userId);
+  try {
+    await ctx.editMessageText("❌ Adjustment mode cancelled.");
+  } catch (e) {
+    await ctx.reply("❌ Adjustment mode cancelled.");
+  }
 });
 
 bot.callbackQuery(/^delfood:(.+)$/, async (ctx) => {
@@ -2197,6 +2621,21 @@ bot.on("message:text", async (ctx) => {
   const text = ctx.message?.text?.trim() || "";
   const userId = ctx.from?.id;
   if (!userId) return;
+
+  // Check for active adjustment session
+  const { data: profile } = await supabase.from("user_profiles").select("active_adjustment").eq("user_id", userId).maybeSingle();
+  const session = profile?.active_adjustment;
+  const isSessionActive = session && session.expires_at && new Date(session.expires_at) > new Date();
+
+  if (isSessionActive) {
+    if (/^(cancel|\/cancel|never\s*mind|keep\s*it|forget\s*it|exit|stop)$/i.test(text)) {
+      await supabase.from("user_profiles").update({ active_adjustment: null }).eq("user_id", userId);
+      return ctx.reply("❌ Adjustment cancelled. Kept your meal as originally estimated!");
+    }
+
+    await adjustFoodWithGemini(ctx, session, { type: "text", content: text });
+    return;
+  }
 
   if (text.startsWith("/")) {
     if (text.startsWith("/edit_")) {
@@ -3023,6 +3462,23 @@ Deno.serve(async (req) => {
       const incomingSecret = req.headers.get("x-telegram-bot-api-secret-token");
       if (incomingSecret !== telegramSecretToken) {
         return new Response("Unauthorized webhook request", { status: 401 });
+      }
+    }
+
+    // In Edge Runtime (Supabase / Deno Deploy), use EdgeRuntime.waitUntil
+    // to return 200 OK immediately (<50ms) to Telegram, eliminating serverless timeouts
+    if (typeof (globalThis as any).EdgeRuntime !== "undefined" && typeof (globalThis as any).EdgeRuntime.waitUntil === "function") {
+      try {
+        const update = await req.json();
+        (globalThis as any).EdgeRuntime.waitUntil(
+          bot.handleUpdate(update).catch((err: any) => {
+            console.error("Error in background update handling:", err);
+          })
+        );
+        return new Response("OK", { status: 200 });
+      } catch (jsonErr) {
+        console.error("Failed to parse Telegram update JSON:", jsonErr);
+        return new Response("Bad Request", { status: 400 });
       }
     }
 
