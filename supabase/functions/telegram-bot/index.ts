@@ -3465,23 +3465,6 @@ Deno.serve(async (req) => {
       }
     }
 
-    // In Edge Runtime (Supabase / Deno Deploy), use EdgeRuntime.waitUntil
-    // to return 200 OK immediately (<50ms) to Telegram, eliminating serverless timeouts
-    if (typeof (globalThis as any).EdgeRuntime !== "undefined" && typeof (globalThis as any).EdgeRuntime.waitUntil === "function") {
-      try {
-        const update = await req.json();
-        (globalThis as any).EdgeRuntime.waitUntil(
-          bot.handleUpdate(update).catch((err: any) => {
-            console.error("Error in background update handling:", err);
-          })
-        );
-        return new Response("OK", { status: 200 });
-      } catch (jsonErr) {
-        console.error("Failed to parse Telegram update JSON:", jsonErr);
-        return new Response("Bad Request", { status: 400 });
-      }
-    }
-
     return await handleUpdate(req);
   } catch (err) {
     console.error("Unhandled server error:", err);
