@@ -9,6 +9,55 @@ const supabaseServiceKey = Deno.env.get("SUPABASE_SERVICE_ROLE_KEY") || "";
 const supabase = createClient(supabaseUrl, supabaseServiceKey);
 const bot = new Bot(token);
 
+// ── Webhook Deduplication & Concurrency Protection ───────────────────────────
+// Telegram resends updates if webhook execution times out or returns an error.
+// We track update_ids both in-memory and in Supabase to prevent duplicate processing.
+const processedUpdates = new Set<number>();
+const processingUpdates = new Set<number>();
+
+bot.use(async (ctx, next) => {
+  const updateId = ctx.update?.update_id;
+  if (!updateId) return next();
+
+  // Fast path: In-memory cache check
+  if (processedUpdates.has(updateId) || processingUpdates.has(updateId)) {
+    console.log(`[Deduplication] Dropping duplicate in-memory update ${updateId}`);
+    return;
+  }
+
+  // Persistent path: Supabase atomic lock
+  try {
+    const { error: lockErr } = await supabase
+      .from("processed_updates")
+      .insert({ update_id: updateId });
+    if (lockErr) {
+      console.log(`[Deduplication] Dropping duplicate DB-locked update ${updateId}: ${lockErr.message}`);
+      processedUpdates.add(updateId);
+      return;
+    }
+  } catch (e) {
+    console.warn(`[Deduplication] DB lock exception for update ${updateId}:`, e);
+  }
+
+  processingUpdates.add(updateId);
+  try {
+    await next();
+    processedUpdates.add(updateId);
+    // Cap memory cache to 10,000 items
+    if (processedUpdates.size > 10000) {
+      const first = processedUpdates.values().next().value;
+      if (first !== undefined) processedUpdates.delete(first);
+    }
+  } finally {
+    processingUpdates.delete(updateId);
+  }
+});
+
+// ── Global Error Handler for grammY ─────────────────────────────────────────
+bot.catch((err) => {
+  console.error(`[Bot Error] Uncaught error for update ${err.ctx?.update?.update_id}:`, err.error);
+});
+
 function arrayBufferToBase64(buffer: ArrayBuffer): string {
   const bytes = new Uint8Array(buffer);
   const chunkSize = 0x8000;
@@ -157,35 +206,39 @@ async function ensureUserProfile(userId: number, firstName?: string, username?: 
 
   if (error) {
     console.error("Error checking user profile:", error);
-    return;
+    return null;
   }
 
   if (!data) {
+    const newProfile = {
+      user_id: userId,
+      daily_target: 2000,
+      reminders_enabled: false,
+      streak_count: 0,
+      persona: "sarcastic",
+      logging_mode: "itemized",
+      first_name: firstName || null,
+      username: username || null
+    };
     const { error: insertError } = await supabase
       .from("user_profiles")
-      .insert({
-        user_id: userId,
-        daily_target: 2000,
-        reminders_enabled: false,
-        streak_count: 0,
-        persona: "sarcastic",
-        logging_mode: "itemized",
-        first_name: firstName || null,
-        username: username || null
-      });
+      .insert(newProfile);
 
     if (insertError) {
       console.error("Error creating user profile:", insertError);
     }
+    return newProfile;
   } else if ((firstName && data.first_name !== firstName) || (username && data.username !== username)) {
-    await supabase
+    supabase
       .from("user_profiles")
       .update({
         first_name: firstName || data.first_name,
         username: username || data.username
       })
-      .eq("user_id", userId);
+      .eq("user_id", userId)
+      .then(() => {});
   }
+  return data;
 }
 
 // Helper: Update consistency streak using SGT
@@ -1634,16 +1687,15 @@ bot.command("leaderboard", async (ctx) => {
 
 async function processFoodWithGemini(
   ctx: any,
-  input: { type: "text" | "image" | "voice"; content: string; mimeType?: string }
+  input: { type: "text" | "image" | "voice"; content: string; mimeType?: string; fallbackFileId?: string }
 ) {
   const userId = ctx.from?.id;
   if (!userId) return;
 
-  await ensureUserProfile(userId, ctx.from?.first_name, ctx.from?.username);
   const typingAction = input.type === "voice" ? "record_voice" : input.type === "image" ? "upload_photo" : "typing";
-  try { await ctx.replyWithChatAction(typingAction); } catch (e) {}
+  ctx.replyWithChatAction(typingAction).catch(() => {});
 
-  const { data: profile } = await supabase.from("user_profiles").select("persona, logging_mode").eq("user_id", userId).maybeSingle();
+  const profile = await ensureUserProfile(userId, ctx.from?.first_name, ctx.from?.username);
   const persona = profile?.persona || "sarcastic";
   const loggingMode = profile?.logging_mode || "itemized";
 
@@ -1708,19 +1760,66 @@ async function processFoodWithGemini(
     });
   }
 
+  const keepTypingInterval = setInterval(() => {
+    ctx.replyWithChatAction("typing").catch(() => {});
+  }, 4500);
+
   try {
-    const res = await fetch(`https://generativelanguage.googleapis.com/v1beta/models/gemini-3.5-flash-lite:generateContent?key=${geminiApiKey}`, {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({
-        systemInstruction: { parts: [{ text: systemPrompt }] },
-        contents: contents,
-        generationConfig: {
-          responseMimeType: "application/json",
-          temperature: 0.4
+    const callGemini = async (reqContents: any[], timeoutMs: number) => {
+      const controller = new AbortController();
+      const timeoutId = setTimeout(() => controller.abort(), timeoutMs);
+      try {
+        const response = await fetch(`https://generativelanguage.googleapis.com/v1beta/models/gemini-3.5-flash-lite:generateContent?key=${geminiApiKey}`, {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          signal: controller.signal,
+          body: JSON.stringify({
+            systemInstruction: { parts: [{ text: systemPrompt }] },
+            contents: reqContents,
+            generationConfig: {
+              responseMimeType: "application/json",
+              temperature: 0.4
+            }
+          })
+        });
+        return response;
+      } finally {
+        clearTimeout(timeoutId);
+      }
+    };
+
+    let res: Response;
+    try {
+      res = await callGemini(contents, 35000);
+    } catch (firstErr: any) {
+      if (firstErr?.name === "AbortError") {
+        console.warn("[Gemini Retry] Primary request timed out after 35s, retrying with fast fallback...");
+        let retryContents = contents;
+        if (input.type === "image" && input.fallbackFileId) {
+          try {
+            const fbFile = await ctx.api.getFile(input.fallbackFileId);
+            if (fbFile.file_path) {
+              const fbUrl = `https://api.telegram.org/file/bot${token}/${fbFile.file_path}`;
+              const fbRes = await fetch(fbUrl);
+              const fbBuf = await fbRes.arrayBuffer();
+              const fbBase64 = arrayBufferToBase64(fbBuf);
+              retryContents = [{
+                role: "user",
+                parts: [
+                  { inlineData: { mimeType: input.mimeType || "image/jpeg", data: fbBase64 } },
+                  { text: "Analyze the food in this image, calculate calories & macronutrients, and provide response in specified JSON schema." }
+                ]
+              }];
+            }
+          } catch (fbErr) {
+            console.warn("[Gemini Retry] Fallback image download failed, reusing original content:", fbErr);
+          }
         }
-      })
-    });
+        res = await callGemini(retryContents, 16000);
+      } else {
+        throw firstErr;
+      }
+    }
 
     const aiRes = await res.json();
     if (!res.ok) {
@@ -1728,7 +1827,9 @@ async function processFoodWithGemini(
       return ctx.reply("Sorry, I couldn't analyze that food item. Please try again!");
     }
 
-    const rawText = aiRes.candidates?.[0]?.content?.parts?.[0]?.text;
+    const parts = aiRes.candidates?.[0]?.content?.parts || [];
+    const textPart = parts.find((p: any) => !p.thought && typeof p.text === "string") || parts[parts.length - 1];
+    const rawText = textPart?.text;
     if (!rawText) return ctx.reply("Sorry, I couldn't analyze that food item. Please try again!");
 
     const cleanedJson = rawText.replace(/```json\s*|```/g, "").trim();
@@ -1806,9 +1907,15 @@ async function processFoodWithGemini(
       .text("❌ Cancel", `cancel:${pendingId}`);
 
     await ctx.reply(msg, { parse_mode: "Markdown", reply_markup: keyboard });
-  } catch (err) {
+  } catch (err: any) {
     console.error("Error in processFoodWithGemini:", err);
-    await ctx.reply("An error occurred while processing your food log. Please try again!");
+    if (err?.name === "AbortError") {
+      await ctx.reply("⏳ Food analysis took a bit too long. Please try again with a clearer or smaller photo!");
+    } else {
+      await ctx.reply("An error occurred while processing your food log. Please try again!");
+    }
+  } finally {
+    clearInterval(keepTypingInterval);
   }
 }
 
@@ -1823,7 +1930,7 @@ async function adjustFoodWithGemini(
   if (!userId) return;
 
   const typingAction = input.type === "voice" ? "record_voice" : "typing";
-  try { await ctx.replyWithChatAction(typingAction); } catch (e) {}
+  ctx.replyWithChatAction(typingAction).catch(() => {});
 
   const { data: profile } = await supabase.from("user_profiles").select("persona").eq("user_id", userId).maybeSingle();
   const persona = profile?.persona || "sarcastic";
@@ -1888,7 +1995,7 @@ async function adjustFoodWithGemini(
 
   try {
     const controller = new AbortController();
-    const timeoutId = setTimeout(() => controller.abort(), 8000);
+    const timeoutId = setTimeout(() => controller.abort(), 35000);
 
     const res = await fetch(`https://generativelanguage.googleapis.com/v1beta/models/gemini-3.5-flash-lite:generateContent?key=${geminiApiKey}`, {
       method: "POST",
@@ -1911,7 +2018,9 @@ async function adjustFoodWithGemini(
       return ctx.reply("Sorry, I couldn't process that adjustment right now. Please try again!");
     }
 
-    const rawText = aiRes.candidates?.[0]?.content?.parts?.[0]?.text;
+    const parts = aiRes.candidates?.[0]?.content?.parts || [];
+    const textPart = parts.find((p: any) => !p.thought && typeof p.text === "string") || parts[parts.length - 1];
+    const rawText = textPart?.text;
     if (!rawText) return ctx.reply("Sorry, I couldn't process that adjustment. Please try again!");
 
     const cleanedJson = rawText.replace(/```json\s*|```/g, "").trim();
@@ -2055,12 +2164,19 @@ bot.on("message:photo", async (ctx) => {
   const photo = ctx.message.photo;
   if (!photo || photo.length === 0) return;
 
-  // Pick optimal resolution: ~800px to 1280px for fast inference without sacrificing detail
-  let bestPhoto = photo[photo.length - 1];
-  for (let i = photo.length - 1; i >= 0; i--) {
-    if ((photo[i].width && photo[i].width <= 1280) || (photo[i].height && photo[i].height <= 1280)) {
-      bestPhoto = photo[i];
-      break;
+  ctx.replyWithChatAction("upload_photo").catch(() => {});
+
+  // Pick optimal resolution based on longest side (<= 800px) so portrait photos (e.g. 720x1280)
+  // don't accidentally match width <= 1000 and upload multi-megapixel 1280px images.
+  let bestPhoto = photo[0];
+  let fallbackPhoto = photo[0];
+  for (const p of photo) {
+    const maxSide = Math.max(p.width || 0, p.height || 0);
+    if (maxSide <= 800) {
+      bestPhoto = p;
+    }
+    if (maxSide <= 384) {
+      fallbackPhoto = p;
     }
   }
 
@@ -2069,14 +2185,19 @@ bot.on("message:photo", async (ctx) => {
     if (!file.file_path) return ctx.reply("Could not download image.");
 
     const fileUrl = `https://api.telegram.org/file/bot${token}/${file.file_path}`;
-    const imageRes = await fetch(fileUrl);
+    const imgController = new AbortController();
+    const imgTimeout = setTimeout(() => imgController.abort(), 10000);
+    const imageRes = await fetch(fileUrl, { signal: imgController.signal });
+    clearTimeout(imgTimeout);
+
     const arrayBuffer = await imageRes.arrayBuffer();
     const base64Data = arrayBufferToBase64(arrayBuffer);
 
     await processFoodWithGemini(ctx, {
       type: "image",
       content: base64Data,
-      mimeType: "image/jpeg"
+      mimeType: "image/jpeg",
+      fallbackFileId: fallbackPhoto.file_id !== bestPhoto.file_id ? fallbackPhoto.file_id : undefined
     });
   } catch (err) {
     console.error("Photo processing error:", err);
@@ -2095,7 +2216,10 @@ bot.on("message:voice", async (ctx) => {
     if (!file.file_path) return ctx.reply("Could not download voice note.");
 
     const fileUrl = `https://api.telegram.org/file/bot${token}/${file.file_path}`;
-    const voiceRes = await fetch(fileUrl);
+    const voiceController = new AbortController();
+    const voiceTimeout = setTimeout(() => voiceController.abort(), 10000);
+    const voiceRes = await fetch(fileUrl, { signal: voiceController.signal });
+    clearTimeout(voiceTimeout);
     const arrayBuffer = await voiceRes.arrayBuffer();
     const base64Data = arrayBufferToBase64(arrayBuffer);
 
@@ -2922,7 +3046,8 @@ async function validateTelegramInitData(initData: string, botTokens: (string | u
 
 // ── Serve ─────────────────────────────────────────────────────────────────────
 
-const handleUpdate = webhookCallback(bot, "std/http");
+// Configure grammY webhook callback with 55s timeout and 'return' mode so it never throws 500 on timeout
+const handleUpdate = webhookCallback(bot, "std/http", "return", 55_000);
 const telegramSecretToken = Deno.env.get("TELEGRAM_SECRET_TOKEN");
 const cronSecret = Deno.env.get("CRON_SECRET");
 
@@ -3465,7 +3590,12 @@ Deno.serve(async (req) => {
       }
     }
 
-    return await handleUpdate(req);
+    try {
+      return await handleUpdate(req);
+    } catch (webhookErr) {
+      console.error("Webhook processing error (swallowed to prevent Telegram retry loop):", webhookErr);
+      return new Response("OK", { status: 200 });
+    }
   } catch (err) {
     console.error("Unhandled server error:", err);
     return new Response(JSON.stringify({ error: "Internal server error" }), {
