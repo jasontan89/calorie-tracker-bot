@@ -30,6 +30,7 @@ let selectedFastHours = 16;
 
 // Barcode Scanner state
 let html5QrCodeScanner = null;
+let scannerStartingPromise = null;
 let isScannerActive = false;
 let isProcessingScan = false;
 let currentScannedProduct = null;
@@ -78,15 +79,12 @@ function getApiHeaders(customHeaders = {}) {
 }
 
 /**
- * Centralized API fetch helper: automatically injects query params, initData, headers, and body
+ * Centralized API fetch helper: automatically injects query params, headers, and body.
+ * Note: initData is exclusively passed via the X-Telegram-Init-Data header to avoid URL leakage.
  */
 async function callApi(action, options = {}) {
-  const initData = getTelegramInitData();
   const params = new URLSearchParams(options.params || {});
   params.set("api", action);
-  if (initData) {
-    params.set("initData", initData);
-  }
 
   const url = `${API_BASE_URL}?${params.toString()}`;
   const headers = getApiHeaders(options.headers || {});
@@ -406,6 +404,11 @@ async function fetchDashboardData(attempt = 1) {
     clearAllTimers();
 
     if (!response.ok) {
+      if (response.status === 401) {
+        const authErr = new Error("UNAUTHORIZED_NO_INITDATA");
+        authErr.status = 401;
+        throw authErr;
+      }
       throw new Error(`API returned HTTP ${response.status}: ${response.statusText}`);
     }
 
@@ -429,6 +432,16 @@ async function fetchDashboardData(attempt = 1) {
     if (errorBanner) errorBanner.style.display = "none";
   } catch (err) {
     clearAllTimers();
+
+    if (err.status === 401 || err.message === "UNAUTHORIZED_NO_INITDATA") {
+      console.warn("Telegram authentication missing. Dashboard requires launch from Telegram Mini App.");
+      if (spinnerAnimElem) spinnerAnimElem.style.display = "none";
+      if (statusTextElem) {
+        statusTextElem.innerHTML = "<strong>Telegram Login Required</strong><br><span style='font-size:0.85em;color:var(--text-secondary);'>Please open this Mini App directly from Telegram (@CalorieTrackerBot).</span>";
+      }
+      return;
+    }
+
     console.warn(`Dashboard fetch attempt ${attempt} failed:`, err);
 
     // If we haven't exhausted our automatic retries, retry automatically after a short delay
@@ -852,10 +865,14 @@ function openBarcodeScanner() {
 
   if (window.Html5Qrcode) {
     try {
+      if (html5QrCodeScanner) {
+        try { html5QrCodeScanner.clear(); } catch (e) {}
+      }
       html5QrCodeScanner = new Html5Qrcode("scanner-reader");
       const config = { fps: 10, qrbox: { width: 250, height: 180 }, aspectRatio: 1.0 };
+      isScannerActive = false;
       
-      html5QrCodeScanner.start(
+      const startPromise = html5QrCodeScanner.start(
         { facingMode: "environment" },
         config,
         (decodedText) => {
@@ -866,11 +883,22 @@ function openBarcodeScanner() {
           lookupBarcodeProduct(decodedText);
         },
         () => {}
-      ).then(() => {
+      );
+      scannerStartingPromise = startPromise;
+
+      startPromise.then(() => {
         isScannerActive = true;
+        if (modal.style.display === "none") {
+          closeBarcodeScanner();
+        }
       }).catch((err) => {
+        isScannerActive = false;
         console.error("Camera access error:", err);
         showToast("Camera permission needed to scan barcodes", true);
+      }).finally(() => {
+        if (scannerStartingPromise === startPromise) {
+          scannerStartingPromise = null;
+        }
       });
     } catch (scannerErr) {
       console.error("Scanner init error:", scannerErr);
@@ -885,7 +913,16 @@ function closeBarcodeScanner() {
   const modal = document.getElementById("scanner-modal");
   if (modal) modal.style.display = "none";
 
-  if (html5QrCodeScanner && isScannerActive) {
+  if (scannerStartingPromise) {
+    scannerStartingPromise.then(() => {
+      if (html5QrCodeScanner && isScannerActive) {
+        html5QrCodeScanner.stop().then(() => {
+          html5QrCodeScanner.clear();
+          isScannerActive = false;
+        }).catch((e) => console.error("Error stopping scanner after start:", e));
+      }
+    }).catch(() => {});
+  } else if (html5QrCodeScanner && isScannerActive) {
     html5QrCodeScanner.stop().then(() => {
       html5QrCodeScanner.clear();
       isScannerActive = false;
@@ -1630,7 +1667,7 @@ async function exportFoodLogsCSV() {
       const created = item.created_at ? new Date(item.created_at).toLocaleString("en-SG", { timeZone: "Asia/Singapore" }) : appState.todayDate;
       const meal = item.meal_type || "Meal";
       let name = (item.food_name || "").replace(/"/g, '""');
-      if (/^[=\+\-\@\t\r]/.test(name)) {
+      if (/^\s*[=\+\-\@\t\r]/.test(name)) {
         name = `'${name}`;
       }
       csv += `${created},${meal},"${name}",${item.calories || 0},${item.protein || 0},${item.carbs || 0},${item.fat || 0}\n`;

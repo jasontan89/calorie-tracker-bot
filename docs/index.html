@@ -3,6 +3,7 @@
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+  <meta http-equiv="Content-Security-Policy" content="default-src 'self' https:; script-src 'self' 'unsafe-inline' https://telegram.org https://cdn.jsdelivr.net https://unpkg.com; style-src 'self' 'unsafe-inline'; img-src 'self' data: https: blob:; connect-src 'self' https://*.supabase.co https://world.openfoodfacts.org; media-src 'self' data: blob:; font-src 'self' data:;">
   <title>Calorie Tracker Dashboard</title>
   <link rel="stylesheet" href="style.css?v=20260831_1935">
   <!-- Telegram Web App SDK in head for early context -->
@@ -411,8 +412,8 @@
   </div>
 
   <!-- Deferred Scripts at End of Body (Non-blocking) -->
-  <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.1/dist/chart.umd.min.js"></script>
-  <script src="https://unpkg.com/html5-qrcode@2.3.8/html5-qrcode.min.js" defer></script>
+  <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.1/dist/chart.umd.min.js" crossorigin="anonymous"></script>
+  <script src="https://unpkg.com/html5-qrcode@2.3.8/html5-qrcode.min.js" crossorigin="anonymous" defer></script>
   <script src="app.js?v=20260905_1535"></script>
 </body>
 </html>

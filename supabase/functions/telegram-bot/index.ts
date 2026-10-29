@@ -74,6 +74,20 @@ function escapeMarkdown(text: string): string {
   return text.replace(/([*_`\[\]])/g, "\\$1");
 }
 
+// Timing-safe string comparison to protect against side-channel timing attacks
+function timingSafeEqualStr(a: string, b: string): boolean {
+  if (typeof a !== "string" || typeof b !== "string" || !a || !b) return false;
+  const encoder = new TextEncoder();
+  const bufA = encoder.encode(a);
+  const bufB = encoder.encode(b);
+  if (bufA.byteLength !== bufB.byteLength) return false;
+  try {
+    return crypto.subtle.timingSafeEqual(bufA, bufB);
+  } catch {
+    return false;
+  }
+}
+
 // Helper function to render text-based progress bars
 function renderProgressBar(current: number, target: number, length: number = 10): string {
   if (!target || target <= 0) target = 1;
@@ -229,14 +243,17 @@ async function ensureUserProfile(userId: number, firstName?: string, username?: 
     }
     return newProfile;
   } else if ((firstName && data.first_name !== firstName) || (username && data.username !== username)) {
-    supabase
-      .from("user_profiles")
-      .update({
-        first_name: firstName || data.first_name,
-        username: username || data.username
-      })
-      .eq("user_id", userId)
-      .then(() => {});
+    try {
+      await supabase
+        .from("user_profiles")
+        .update({
+          first_name: firstName || data.first_name,
+          username: username || data.username
+        })
+        .eq("user_id", userId);
+    } catch (e) {
+      console.warn("Failed to update profile names:", e);
+    }
   }
   return data;
 }
@@ -357,12 +374,20 @@ async function startUserFast(userId: number, targetHours: number, customStartTim
     .eq("user_id", userId)
     .eq("status", "active");
 
-  const startTime = customStartTime ? new Date(customStartTime).toISOString() : new Date().toISOString();
+  const safeHours = Math.max(1, Math.min(72, Number(targetHours) || 16));
+  let startTime = new Date().toISOString();
+  if (customStartTime) {
+    const parsed = new Date(customStartTime);
+    if (!isNaN(parsed.getTime())) {
+      startTime = parsed.toISOString();
+    }
+  }
+
   const { data, error } = await supabase
     .from("fasting_logs")
     .insert({
       user_id: userId,
-      target_hours: targetHours || 16,
+      target_hours: safeHours,
       start_time: startTime,
       status: "active"
     })
@@ -506,13 +531,23 @@ function formatFastingSummary(fast: any) {
   };
 }
 
-async function checkAndAutoStopFast(userId: number): Promise<{
+async function checkAndAutoStopFast(userId: number, mealCalories?: number): Promise<{
   stopped: boolean;
   fast?: any;
   summaryMsg?: string;
 } | null> {
   const active = await getActiveFast(userId);
   if (!active) return null;
+
+  // Zero-calorie or negligible intake (<= 15 kcal, e.g. water, black coffee, tea, vitamins) does not break fasting
+  if (mealCalories !== undefined && mealCalories <= 15) {
+    const summary = formatFastingSummary(active);
+    return {
+      stopped: false,
+      fast: active,
+      summaryMsg: `💧 *Hydration / Low-Calorie Item Logged*\nYour active ${summary.targetHours}h fast continues! (${summary.elapsedH}h ${summary.elapsedM}m elapsed)`
+    };
+  }
 
   const stopped = await stopUserFast(userId);
   if (!stopped) return null;
@@ -705,6 +740,11 @@ async function generateWeeklyInfographicData(userId: number) {
 
   const chartUrl = `https://quickchart.io/chart?bkg=%230f172a&c=${encodeURIComponent(JSON.stringify(chartConfig))}`;
 
+  const todayStr = getSGTDateStr();
+  const yesterdayStr = getSGTDateStr(new Date(Date.now() - 86400000));
+  const isStreakActive = profile?.last_log_date === todayStr || profile?.last_log_date === yesterdayStr;
+  const activeStreak = isStreakActive ? (profile?.streak_count || 0) : 0;
+
   return {
     profile,
     target,
@@ -722,7 +762,7 @@ async function generateWeeklyInfographicData(userId: number) {
     weightDeltaStr,
     grade,
     chartUrl,
-    streak: profile?.streak_count || 0
+    streak: activeStreak
   };
 }
 
@@ -765,15 +805,19 @@ async function generateAICoaching(userId: number, type: "daily" | "weekly" = "da
     : `Here is what the user ate today (Total: ${totalCalories} kcal, Target: ${target} kcal):\n${mealSummary || "Nothing logged yet today."}\nProvide a quick end-of-day coaching commentary.`;
 
   try {
+    const controller = new AbortController();
+    const timeoutId = setTimeout(() => controller.abort(), 12000);
     const res = await fetch(`https://generativelanguage.googleapis.com/v1beta/models/gemini-3.5-flash-lite:generateContent?key=${geminiApiKey}`, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
+      signal: controller.signal,
       body: JSON.stringify({
         systemInstruction: { parts: [{ text: systemPrompt }] },
         contents: [{ role: "user", parts: [{ text: userPrompt }] }],
         generationConfig: { temperature: 0.8, maxOutputTokens: 180 }
       })
     });
+    clearTimeout(timeoutId);
     const data = await res.json();
     return data.candidates?.[0]?.content?.parts?.[0]?.text?.trim() ?? null;
   } catch (e) {
@@ -834,7 +878,7 @@ async function sendTodaySummary(ctx: any, userId: number, firstName?: string, us
     message += `*Meals Logged Today:*\n`;
     logs.forEach((item) => {
       const safeFoodName = escapeMarkdown(item.food_name);
-      const meal = item.meal_type ? ` [${item.meal_type}]` : "";
+      const meal = item.meal_type ? ` (${escapeMarkdown(item.meal_type)})` : "";
       const macros = item.protein || item.carbs || item.fat
         ? ` _(P:${item.protein || 0}g C:${item.carbs || 0}g F:${item.fat || 0}g)_`
         : "";
@@ -1193,7 +1237,7 @@ bot.command("export", async (ctx) => {
       hour12: false
     }).format(d);
     let safeName = (log.food_name || "").replace(/"/g, '""');
-    if (/^[=\+\-\@\t\r]/.test(safeName)) {
+    if (/^\s*[=\+\-\@\t\r]/.test(safeName)) {
       safeName = `'${safeName}`;
     }
     const meal = log.meal_type || "Meal";
@@ -1234,7 +1278,7 @@ bot.command("fast", async (ctx) => {
   const parts = text.split(/\s+/);
 
   if (parts[1]?.toLowerCase() === "start") {
-    const hours = parseInt(parts[2], 10) || 16;
+    const hours = Math.max(1, Math.min(72, parseInt(parts[2], 10) || 16));
     const fast = await startUserFast(userId, hours);
     if (!fast) return ctx.reply("Failed to start fasting timer.");
     const summary = formatFastingSummary(fast);
@@ -1623,6 +1667,10 @@ bot.command("joinleaderboard", async (ctx) => {
   const chatId = ctx.chat?.id;
   if (!userId || !chatId) return;
 
+  if (ctx.chat?.type === "private") {
+    return ctx.reply("ℹ️ This command is for Telegram group chats! Add me to your fitness or family group with friends and run /joinleaderboard there to compete.", { parse_mode: "Markdown" });
+  }
+
   await ensureUserProfile(userId, ctx.from?.first_name, ctx.from?.username);
   const { error } = await supabase.from("group_members").upsert({ group_id: chatId, user_id: userId });
   if (error) return ctx.reply("Failed to join leaderboard.");
@@ -1634,6 +1682,11 @@ bot.command("joinleaderboard", async (ctx) => {
 bot.command("leaderboard", async (ctx) => {
   const chatId = ctx.chat?.id;
   if (!chatId) return;
+
+  if (ctx.chat?.type === "private") {
+    return ctx.reply("ℹ️ Group leaderboards are designed for Telegram group chats! Add me to a group and run /leaderboard there.", { parse_mode: "Markdown" });
+  }
+
   if (ctx.from?.id) await ensureUserProfile(ctx.from.id, ctx.from.first_name, ctx.from.username);
 
   const { data: members } = await supabase.from("group_members").select("user_id").eq("group_id", chatId);
@@ -1756,7 +1809,7 @@ async function processFoodWithGemini(
   } else {
     contents.push({
       role: "user",
-      parts: [{ text: `What I ate: "${input.content}". Estimate calories, macronutrients, and format as specified JSON.` }]
+      parts: [{ text: `Here is the user's food description enclosed in <user_input> tags:\n<user_input>\n${input.content.substring(0, 2000)}\n</user_input>\nEstimate calories, macronutrients, and format as specified JSON.` }]
     });
   }
 
@@ -1988,7 +2041,7 @@ async function adjustFoodWithGemini(
     contents.push({
       role: "user",
       parts: [
-        { text: `User adjustment instruction: "${input.content}". Please recalculate calories and macronutrients accordingly.` }
+        { text: `User adjustment instruction enclosed in <user_input> tags:\n<user_input>\n${input.content.substring(0, 2000)}\n</user_input>\nPlease recalculate calories and macronutrients accordingly.` }
       ]
     });
   }
@@ -2084,15 +2137,8 @@ async function adjustFoodWithGemini(
         items: newItems
       }).eq("id", session.target_id).eq("user_id", userId);
 
-      await supabase.from("user_profiles").update({
-        active_adjustment: {
-          ...session,
-          original_items: newItems,
-          original_calories: totalC,
-          original_name: summaryFoodName,
-          expires_at: new Date(Date.now() + 10 * 60 * 1000).toISOString()
-        }
-      }).eq("user_id", userId);
+      // Conclude active adjustment session so subsequent regular messages aren't hijacked
+      await supabase.from("user_profiles").update({ active_adjustment: null }).eq("user_id", userId);
 
       const cardText =
         `🍽️ *Updated Meal (${escapeMarkdown(session.meal_type || "Meal")}):*\n\n` +
@@ -2189,6 +2235,7 @@ bot.on("message:photo", async (ctx) => {
     const imgTimeout = setTimeout(() => imgController.abort(), 10000);
     const imageRes = await fetch(fileUrl, { signal: imgController.signal });
     clearTimeout(imgTimeout);
+    if (!imageRes.ok) throw new Error(`Failed to download image from Telegram: ${imageRes.status}`);
 
     const arrayBuffer = await imageRes.arrayBuffer();
     const base64Data = arrayBufferToBase64(arrayBuffer);
@@ -2220,6 +2267,7 @@ bot.on("message:voice", async (ctx) => {
     const voiceTimeout = setTimeout(() => voiceController.abort(), 10000);
     const voiceRes = await fetch(fileUrl, { signal: voiceController.signal });
     clearTimeout(voiceTimeout);
+    if (!voiceRes.ok) throw new Error(`Failed to download voice note from Telegram: ${voiceRes.status}`);
     const arrayBuffer = await voiceRes.arrayBuffer();
     const base64Data = arrayBufferToBase64(arrayBuffer);
 
@@ -2428,7 +2476,7 @@ bot.callbackQuery(/^log_barcode:(.+):(.+)$/, async (ctx) => {
 
   if (error) return ctx.reply("Failed to log barcode food.");
   const streakMsg = await updateStreakAndGetMessage(userId);
-  const fastResult = await checkAndAutoStopFast(userId);
+  const fastResult = await checkAndAutoStopFast(userId, product.calories);
 
   let replyText = `✅ *Logged ${escapeMarkdown(product.name)}!*\n\n` +
     `• Meal: *${mealType}*\n` +
@@ -2505,26 +2553,37 @@ bot.callbackQuery(/^confirm:(.+)$/, async (ctx) => {
   const { data: pending, error: pErr } = await supabase.from("pending_food_logs").select("*").eq("id", pendingId).eq("user_id", userId).maybeSingle();
   if (pErr || !pending) return ctx.reply("This meal confirmation has expired or was already logged.");
 
-  const items = pending.items || [];
+  const items = (pending.items && Array.isArray(pending.items) && pending.items.length > 0)
+    ? pending.items
+    : [{
+        food_name: pending.food_name || "Meal",
+        portion: "1 serving",
+        calories: pending.calories || 0,
+        protein: pending.protein || 0,
+        carbs: pending.carbs || 0,
+        fat: pending.fat || 0
+      }];
+
   const rows = items.map((item: any) => ({
     user_id: userId,
-    food_name: item.food_name,
-    calories: item.calories,
-    protein: item.protein || 0,
-    carbs: item.carbs || 0,
-    fat: item.fat || 0,
+    food_name: item.food_name || pending.food_name || "Meal",
+    calories: Math.max(0, Math.round(Number(item.calories) || 0)),
+    protein: Math.max(0, Math.round(Number(item.protein) || 0)),
+    carbs: Math.max(0, Math.round(Number(item.carbs) || 0)),
+    fat: Math.max(0, Math.round(Number(item.fat) || 0)),
     meal_type: pending.meal_type || getMealType()
   }));
 
   const { error: insErr } = await supabase.from("food_logs").insert(rows);
   if (insErr) return ctx.reply("Failed to log food.");
 
-  await supabase.from("pending_food_logs").delete().eq("id", pendingId);
+  await supabase.from("pending_food_logs").delete().eq("id", pendingId).eq("user_id", userId);
   await supabase.from("user_profiles").update({ active_adjustment: null }).eq("user_id", userId);
   const streakMsg = await updateStreakAndGetMessage(userId);
-  const fastResult = await checkAndAutoStopFast(userId);
+  const totalC = rows.reduce((sum: number, r: any) => sum + r.calories, 0);
+  const fastResult = await checkAndAutoStopFast(userId, totalC);
 
-  let confirmMsg = `✅ *Logged ${items.length} item${items.length > 1 ? "s" : ""} successfully!*`;
+  let confirmMsg = `✅ *Logged ${rows.length} item${rows.length > 1 ? "s" : ""} successfully!*`;
   if (streakMsg) confirmMsg += `\n\n${streakMsg}`;
   if (fastResult?.summaryMsg) confirmMsg += `\n\n${fastResult.summaryMsg}`;
 
@@ -2548,15 +2607,24 @@ bot.callbackQuery(/^save_preset:(.+)$/, async (ctx) => {
   const { data: pending } = await supabase.from("pending_food_logs").select("*").eq("id", pendingId).eq("user_id", userId).maybeSingle();
   if (!pending) return ctx.reply("Pending meal not found.");
 
-  const items = pending.items || [];
+  const items = (pending.items && Array.isArray(pending.items) && pending.items.length > 0)
+    ? pending.items
+    : [{
+        food_name: pending.food_name || "Meal",
+        calories: pending.calories || 0,
+        protein: pending.protein || 0,
+        carbs: pending.carbs || 0,
+        fat: pending.fat || 0
+      }];
+
   for (const item of items) {
     await supabase.from("user_presets").insert({
       user_id: userId,
-      food_name: item.food_name,
-      calories: item.calories,
-      protein: item.protein || 0,
-      carbs: item.carbs || 0,
-      fat: item.fat || 0
+      food_name: item.food_name || pending.food_name || "Meal",
+      calories: Math.max(0, Math.round(Number(item.calories) || 0)),
+      protein: Math.max(0, Math.round(Number(item.protein) || 0)),
+      carbs: Math.max(0, Math.round(Number(item.carbs) || 0)),
+      fat: Math.max(0, Math.round(Number(item.fat) || 0))
     });
   }
 
@@ -2582,7 +2650,7 @@ bot.callbackQuery(/^log_preset:(.+)$/, async (ctx) => {
   });
 
   const streakMsg = await updateStreakAndGetMessage(userId);
-  const fastResult = await checkAndAutoStopFast(userId);
+  const fastResult = await checkAndAutoStopFast(userId, p.calories);
   let replyMsg = `✅ Logged preset *${escapeMarkdown(p.food_name)}* (${p.calories} kcal)! ${streakMsg}`;
   if (fastResult?.summaryMsg) replyMsg += `\n\n${fastResult.summaryMsg}`;
   await ctx.reply(replyMsg, { parse_mode: "Markdown" });
@@ -2793,7 +2861,7 @@ bot.on("message:text", async (ctx) => {
         food_name: updatedName,
         calories: newCal,
         items
-      }).eq("id", pendingId);
+      }).eq("id", pendingId).eq("user_id", userId);
 
       const keyboard = new InlineKeyboard()
         .text("✅ Confirm & Log", `confirm:${pendingId}`)
@@ -2849,7 +2917,10 @@ async function sendCronReminders(type: "midday" | "night" | "weekly") {
 
           const keyboard = new InlineKeyboard().webApp("📱 Open Dashboard", WEBAPP_URL);
           await bot.api.sendPhoto(userId, info.chartUrl, { caption, parse_mode: "Markdown", reply_markup: keyboard });
-        } catch (err) {
+        } catch (err: any) {
+          if (err?.error_code === 403 || String(err).includes("blocked")) {
+            await supabase.from("user_profiles").update({ reminders_enabled: false }).eq("user_id", userId);
+          }
           console.error(`Failed to send weekly infographic to ${userId}:`, err);
         }
         continue;
@@ -2865,23 +2936,42 @@ async function sendCronReminders(type: "midday" | "night" | "weekly") {
             `🔔 *Daily Check-in Reminder (SGT)*\n\nYou haven't logged any meals today! Did you eat breakfast or lunch? Send a photo 📸 or voice note 🎙️ to keep your streak alive!`,
             { parse_mode: "Markdown" }
           );
-        } catch (err) {}
+        } catch (err: any) {
+          if (err?.error_code === 403 || String(err).includes("blocked")) {
+            await supabase.from("user_profiles").update({ reminders_enabled: false }).eq("user_id", userId);
+          }
+        }
       } else if (type === "night") {
-        const dailyCoaching = await generateAICoaching(userId, "daily");
-        const safeDailyCoaching = dailyCoaching ? escapeMarkdown(dailyCoaching) : null;
-        const roastHeader = personaStyle === "supportive" ? "💖 *Daily Coach Note:*" : personaStyle === "sergeant" ? "🪖 *Sergeant's Report:*" : "😏 *Daily AI Roast:*";
-        const coachingText = safeDailyCoaching ? `\n\n${roastHeader}\n_${safeDailyCoaching}_` : "";
+        let coachingText = "";
+        if (logCount > 0) {
+          const dailyCoaching = await generateAICoaching(userId, "daily");
+          const safeDailyCoaching = dailyCoaching ? escapeMarkdown(dailyCoaching) : null;
+          const roastHeader = personaStyle === "supportive" ? "💖 *Daily Coach Note:*" : personaStyle === "sergeant" ? "🪖 *Sergeant's Report:*" : "😏 *Daily AI Roast:*";
+          coachingText = safeDailyCoaching ? `\n\n${roastHeader}\n_${safeDailyCoaching}_` : "";
+        }
 
         try {
           const text = logCount === 0
             ? `🔔 *Daily Check-in Reminder (SGT)*\n\nYou haven't logged any meals today. Record what you ate to finish strong! 📸`
             : `🔔 *Daily Check-in Reminder (SGT)*\n\nYou've logged your meals today!${coachingText}`;
           await bot.api.sendMessage(userId, text, { parse_mode: "Markdown" });
-        } catch (err) {}
+        } catch (err: any) {
+          if (err?.error_code === 403 || String(err).includes("blocked")) {
+            await supabase.from("user_profiles").update({ reminders_enabled: false }).eq("user_id", userId);
+          }
+        }
       }
     } catch (userErr) {
       console.error(`Error in sendCronReminders for user ${userId}:`, userErr);
     }
+  }
+
+  // Periodic pruning: delete updates older than 48 hours to prevent unbounded table growth
+  try {
+    const cutoffIso = new Date(Date.now() - 48 * 3600 * 1000).toISOString();
+    await supabase.from("processed_updates").delete().lt("created_at", cutoffIso);
+  } catch (cleanErr) {
+    console.warn("Failed to prune stale processed_updates:", cleanErr);
   }
 }
 
@@ -3053,16 +3143,19 @@ const cronSecret = Deno.env.get("CRON_SECRET");
 
 Deno.serve(async (req) => {
   const requestOrigin = req.headers.get("origin") || "";
-  const isAllowedOrigin =
-    !requestOrigin ||
-    requestOrigin === "null" ||
-    requestOrigin.endsWith(".github.io") ||
-    requestOrigin.includes("telegram.org") ||
-    requestOrigin.startsWith("http://localhost") ||
-    requestOrigin.startsWith("http://127.0.0.1");
+  const ALLOWED_ORIGINS = new Set([
+    "https://jasontan89.github.io",
+    "http://localhost:3000",
+    "http://localhost:5173",
+    "http://localhost:8080",
+    "http://127.0.0.1:5500",
+    "http://127.0.0.1:3000"
+  ]);
+
+  const isAllowedOrigin = requestOrigin ? ALLOWED_ORIGINS.has(requestOrigin) : false;
 
   const corsHeaders = {
-    "Access-Control-Allow-Origin": isAllowedOrigin ? (requestOrigin === "null" || !requestOrigin ? "*" : requestOrigin) : "https://jasontan89.github.io",
+    "Access-Control-Allow-Origin": isAllowedOrigin ? requestOrigin : "https://jasontan89.github.io",
     "Access-Control-Allow-Methods": "GET, POST, OPTIONS",
     "Access-Control-Allow-Headers": "Authorization, Content-Type, X-Telegram-Init-Data, Accept, apikey, x-client-info, x-admin-secret, x-cron-secret",
     "Access-Control-Max-Age": "86400",
@@ -3078,32 +3171,12 @@ Deno.serve(async (req) => {
 
     // ── Web App REST API Router ───────────────────────────────────────────────
     if (apiAction) {
-      if (apiAction === "lookup_barcode") {
-        let barcode = url.searchParams.get("barcode");
-        if (!barcode && req.method === "POST") {
-          try {
-            const body = await req.json();
-            barcode = body?.barcode;
-          } catch (e) {}
-        }
-        if (!barcode) {
-          return new Response(JSON.stringify({ error: "Missing barcode" }), { status: 400, headers: { ...corsHeaders, "Content-Type": "application/json" } });
-        }
-        const product = await fetchOpenFoodFacts(barcode);
-        if (!product) {
-          return new Response(JSON.stringify({ error: "Product not found on Open Food Facts" }), { status: 404, headers: { ...corsHeaders, "Content-Type": "application/json" } });
-        }
-        return new Response(JSON.stringify({ success: true, product }), {
-          status: 200,
-          headers: { ...corsHeaders, "Content-Type": "application/json" }
-        });
-      }
-
       // ── Admin Actions (Authenticated via adminSecret) ─────────────────────────
       if (apiAction === "setup_bot_profile" || apiAction === "setup_webhook" || apiAction === "webhook_info") {
         const adminSecret = cronSecret || supabaseServiceKey;
-        const reqSecret = req.headers.get("x-admin-secret") || url.searchParams.get("secret");
-        if (!adminSecret || reqSecret !== adminSecret) {
+        const reqSecret = req.headers.get("x-admin-secret") || req.headers.get("authorization")?.replace("Bearer ", "") || "";
+        const isAuthorized = adminSecret && timingSafeEqualStr(reqSecret, adminSecret);
+        if (!isAuthorized) {
           return new Response(JSON.stringify({ error: "Unauthorized: Missing or invalid admin secret" }), {
             status: 401,
             headers: { ...corsHeaders, "Content-Type": "application/json" }
@@ -3142,12 +3215,9 @@ Deno.serve(async (req) => {
 
       const authHeader = req.headers.get("authorization") || "";
       const customHeader = req.headers.get("x-telegram-init-data") || "";
-      const queryInitData = url.searchParams.get("initData") || "";
 
       let initData = "";
-      if (queryInitData) {
-        initData = queryInitData;
-      } else if (customHeader) {
+      if (customHeader) {
         initData = customHeader;
       } else if (authHeader.startsWith("Bearer ") && !authHeader.includes("eyJ")) {
         initData = authHeader.substring(7);
@@ -3190,8 +3260,11 @@ Deno.serve(async (req) => {
         const macroTargets = getMacroTargets(target, profile);
         const pastLogs = pastLogsRes.data || [];
 
-        // Today's food logs are a subset of the past 7 days logs
-        const todayLogs = pastLogs.filter(l => l.created_at >= sgtStartIso);
+        const todayDateStr = getSGTDateStr();
+        const yesterdayDateStr = getSGTDateStr(new Date(Date.now() - 86400000));
+
+        // Today's food logs are accurately matched by SGT calendar date string
+        const todayLogs = pastLogs.filter(l => getSGTDateStr(new Date(l.created_at)) === todayDateStr);
         const totalCalories = todayLogs.reduce((sum, item) => sum + item.calories, 0);
         const totalProtein = todayLogs.reduce((sum, item) => sum + (item.protein || 0), 0);
         const totalCarbs = todayLogs.reduce((sum, item) => sum + (item.carbs || 0), 0);
@@ -3227,9 +3300,15 @@ Deno.serve(async (req) => {
         const presets = presetsRes.data || [];
         const recentFasts = recentFastsRes.data || [];
 
+        const isStreakActive = profile?.last_log_date === todayDateStr || profile?.last_log_date === yesterdayDateStr;
+        const displayProfile = profile ? {
+          ...profile,
+          streak_count: isStreakActive ? (profile.streak_count || 0) : 0
+        } : { user_id: userId, daily_target: 2000, streak_count: 0, persona: "sarcastic", logging_mode: "itemized" };
+
         return new Response(JSON.stringify({
-          profile: profile || { user_id: userId, daily_target: 2000, streak_count: 0, persona: "sarcastic", logging_mode: "itemized" },
-          todayDate: getSGTDateStr(),
+          profile: displayProfile,
+          todayDate: todayDateStr,
           todayTotals: { calories: totalCalories, protein: totalProtein, carbs: totalCarbs, fat: totalFat },
           macroTargets: macroTargets,
           todayLogs: todayLogs,
@@ -3280,7 +3359,7 @@ Deno.serve(async (req) => {
         }
 
         await updateStreakAndGetMessage(userId);
-        const fastResult = await checkAndAutoStopFast(userId);
+        const fastResult = await checkAndAutoStopFast(userId, p.calories);
         return new Response(JSON.stringify({
           success: true,
           log: inserted,
@@ -3301,12 +3380,10 @@ Deno.serve(async (req) => {
 
       if (apiAction === "update_persona" && req.method === "POST") {
         const body = await req.json();
-        const persona = body?.persona;
-        if (!persona) {
-          return new Response(JSON.stringify({ error: "Missing persona" }), { status: 400, headers: { ...corsHeaders, "Content-Type": "application/json" } });
-        }
-        await supabase.from("user_profiles").update({ persona }).eq("user_id", userId);
-        return new Response(JSON.stringify({ success: true, persona }), { headers: { ...corsHeaders, "Content-Type": "application/json" } });
+        const allowedPersonas = new Set(["sarcastic", "supportive", "sergeant"]);
+        const safePersona = allowedPersonas.has(body?.persona) ? body.persona : "sarcastic";
+        await supabase.from("user_profiles").update({ persona: safePersona }).eq("user_id", userId);
+        return new Response(JSON.stringify({ success: true, persona: safePersona }), { headers: { ...corsHeaders, "Content-Type": "application/json" } });
       }
 
       if (apiAction === "update_logging_mode" && req.method === "POST") {
@@ -3328,13 +3405,17 @@ Deno.serve(async (req) => {
           return new Response(JSON.stringify({ success: true, is_auto: true }), { headers: { ...corsHeaders, "Content-Type": "application/json" } });
         }
 
-        const p = parseInt(body?.protein, 10);
-        const c = parseInt(body?.carbs, 10);
-        const f = parseInt(body?.fat, 10);
+        const rawP = parseInt(body?.protein, 10);
+        const rawC = parseInt(body?.carbs, 10);
+        const rawF = parseInt(body?.fat, 10);
 
-        if (isNaN(p) || isNaN(c) || isNaN(f) || p < 0 || c < 0 || f < 0) {
+        if (isNaN(rawP) || isNaN(rawC) || isNaN(rawF) || rawP < 0 || rawC < 0 || rawF < 0) {
           return new Response(JSON.stringify({ error: "Invalid macro values" }), { status: 400, headers: { ...corsHeaders, "Content-Type": "application/json" } });
         }
+
+        const p = Math.min(1000, rawP);
+        const c = Math.min(1000, rawC);
+        const f = Math.min(1000, rawF);
 
         await supabase.from("user_profiles").update({
           target_protein: p,
@@ -3347,10 +3428,11 @@ Deno.serve(async (req) => {
 
       if (apiAction === "update_target" && req.method === "POST") {
         const body = await req.json();
-        const targetVal = parseInt(body?.target, 10);
-        if (!targetVal || targetVal <= 0) {
+        const rawTarget = parseInt(body?.target, 10);
+        if (isNaN(rawTarget) || rawTarget <= 0) {
           return new Response(JSON.stringify({ error: "Invalid target" }), { status: 400, headers: { ...corsHeaders, "Content-Type": "application/json" } });
         }
+        const targetVal = Math.max(500, Math.min(15000, rawTarget));
         await supabase.from("user_profiles").update({ daily_target: targetVal }).eq("user_id", userId);
         return new Response(JSON.stringify({ success: true, target: targetVal }), { headers: { ...corsHeaders, "Content-Type": "application/json" } });
       }
@@ -3413,14 +3495,19 @@ Deno.serve(async (req) => {
           return new Response(JSON.stringify({ error: "Invalid food parameters" }), { status: 400, headers: { ...corsHeaders, "Content-Type": "application/json" } });
         }
 
+        const safeCal = Math.min(20000, Math.round(calories));
+        const safeP = Math.min(1000, Math.round(protein));
+        const safeC = Math.min(2000, Math.round(carbs));
+        const safeF = Math.min(1000, Math.round(fat));
+
         const { data: inserted, error: insErr } = await supabase.from("food_logs").insert({
           user_id: userId,
-          food_name: foodName,
-          calories: calories,
-          protein: protein,
-          carbs: carbs,
-          fat: fat,
-          meal_type: mealType
+          food_name: String(foodName).substring(0, 500),
+          calories: safeCal,
+          protein: safeP,
+          carbs: safeC,
+          fat: safeF,
+          meal_type: String(mealType).substring(0, 50)
         }).select().single();
 
         if (insErr) {
@@ -3428,7 +3515,7 @@ Deno.serve(async (req) => {
         }
 
         await updateStreakAndGetMessage(userId);
-        const fastResult = await checkAndAutoStopFast(userId);
+        const fastResult = await checkAndAutoStopFast(userId, safeCal);
         return new Response(JSON.stringify({
           success: true,
           log: inserted,
@@ -3496,7 +3583,7 @@ Deno.serve(async (req) => {
             hour12: false
           }).format(d);
           let safeName = (log.food_name || "").replace(/"/g, '""');
-          if (/^[=\+\-\@\t\r]/.test(safeName)) {
+          if (/^\s*[=\+\-\@\t\r]/.test(safeName)) {
             safeName = `'${safeName}`;
           }
           const meal = log.meal_type || "Meal";
@@ -3545,17 +3632,16 @@ Deno.serve(async (req) => {
     const cronType = url.searchParams.get("cron");
 
     if (cronType === "midday" || cronType === "night" || cronType === "weekly" || cronType === "fasting") {
-      const authHeader = req.headers.get("authorization")?.replace("Bearer ", "");
       const headerSecret = req.headers.get("x-cron-secret");
-      const querySecret = url.searchParams.get("secret");
-      const providedSecret = querySecret || headerSecret || authHeader;
+      const authHeader = req.headers.get("authorization")?.replace("Bearer ", "");
+      const providedSecret = headerSecret || authHeader || "";
 
       if (!cronSecret) {
         console.error("CRON_SECRET environment variable is not configured.");
         return new Response("Cron endpoint unconfigured", { status: 500 });
       }
 
-      const isAuthorized = providedSecret === cronSecret || providedSecret === supabaseServiceKey;
+      const isAuthorized = timingSafeEqualStr(providedSecret, cronSecret) || (supabaseServiceKey && timingSafeEqualStr(providedSecret, supabaseServiceKey));
 
       if (!isAuthorized) {
         return new Response("Unauthorized cron trigger", { status: 401 });
@@ -3575,7 +3661,7 @@ Deno.serve(async (req) => {
       return new Response(JSON.stringify({
         status: "ok",
         service: "Telegram Calorie Tracker Bot",
-        version: "3.5",
+        version: "3.7",
         time: new Date().toISOString()
       }), {
         headers: { ...corsHeaders, "Content-Type": "application/json" }
@@ -3583,11 +3669,14 @@ Deno.serve(async (req) => {
     }
 
     // ── Telegram Webhook ──────────────────────────────────────────────────────
-    if (telegramSecretToken) {
-      const incomingSecret = req.headers.get("x-telegram-bot-api-secret-token");
-      if (incomingSecret !== telegramSecretToken) {
-        return new Response("Unauthorized webhook request", { status: 401 });
-      }
+    if (!telegramSecretToken) {
+      console.error("TELEGRAM_SECRET_TOKEN environment variable is not configured.");
+      return new Response("Webhook endpoint unconfigured", { status: 500 });
+    }
+
+    const incomingSecret = req.headers.get("x-telegram-bot-api-secret-token") || "";
+    if (!timingSafeEqualStr(incomingSecret, telegramSecretToken)) {
+      return new Response("Unauthorized webhook request", { status: 401 });
     }
 
     try {

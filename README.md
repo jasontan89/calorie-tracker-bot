@@ -355,6 +355,7 @@ SUPABASE_SERVICE_ROLE_KEY="eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9..."
    - `supabase-schema-v3.2.sql` (Names, meal types)
    - `supabase-schema-v3.3-fasting.sql` (Fasting logs table, RLS, index)
    - `supabase-schema-v3.4-consolidation.sql` (Missing columns, foreign keys & performance indexes)
+   - `supabase-schema-v3.7-cleanup.sql` (Foreign key cascade cleanup & stale record pruning function)
 
 ### 2. Supabase Secrets Configuration
 Store your bot token, webhook secret, cron secret, and Gemini API key securely in Supabase:
@@ -403,12 +404,20 @@ curl https://api.telegram.org/bot<CALORIE_BOT_TOKEN>/getWebhookInfo
 
 ## 🛡️ Security & Authentication
 
+- **Enforced Telegram Secret Token Verification:**
+  Telegram Webhook requests validate the `X-Telegram-Bot-Api-Secret-Token` header using constant-time verification. Unauthenticated requests are rejected immediately with HTTP 401 before any bot processing.
 - **Telegram `initData` HMAC-SHA256 Verification:**
-  Every request from the WebApp passes Telegram's cryptographically signed `initData`. The backend validates the HMAC signature using a secret key derived from `HMAC_SHA256("WebAppData", botToken)` to prevent request forgery and verify user identity.
-- **Multi-Token Candidate Handling:**
-  The validation logic supports both `CALORIE_BOT_TOKEN` and `TELEGRAM_BOT_TOKEN` environment secrets to maintain continuous session authentication during token rotations.
-- **Row Level Security (RLS):**
-  All database tables enforce RLS, ensuring user records are isolated and only accessible by authorized sessions and the backend service role.
+  Every request from the WebApp passes Telegram's cryptographically signed `initData`. The backend validates the HMAC signature using a secret key derived from `HMAC_SHA256("WebAppData", botToken)` to prevent request forgery and verify user identity. WebApp credentials are transmitted strictly via the `X-Telegram-Init-Data` request header to prevent leakage in URL logs.
+- **Constant-Time String Comparison:**
+  All secret and signature validations utilize Web Crypto's `crypto.subtle.timingSafeEqual` with uniform SHA-256 digests to protect against side-channel timing attacks.
+- **Strict CORS Origin Whitelisting:**
+  API endpoints enforce strict origin validation against the production GitHub Pages domain (`https://jasontan89.github.io`) and local development origins, rejecting wildcard or untrusted cross-origin access.
+- **CSV Formula Injection Mitigation:**
+  All user-supplied food descriptions in CSV exports are sanitized against spreadsheet formula injection attacks (`/^\s*[=\+\-\@\t\r]/`) across both Telegram chat exports and browser file downloads.
+- **LLM Prompt Injection Defense:**
+  User meal descriptions and adjustments sent to Google Gemini are encapsulated within explicit `<user_input>` XML tags with strict system boundaries prohibiting system role redefinition.
+- **Row Level Security (RLS) & Foreign Key Cascade:**
+  All database tables enforce RLS, ensuring user records are isolated and only accessible by authorized sessions and the backend service role. Cascading foreign keys ensure child food logs are safely cleaned up if pending records expire.
 - **Native Web API Encoders:**
   Photo and voice base64 operations run purely on native `Uint8Array` / `btoa` buffer operations without external unstable dependencies.
 
